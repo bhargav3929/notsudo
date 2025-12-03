@@ -1,12 +1,43 @@
 from github import Github
+from github.GithubException import GithubException, UnknownObjectException
 import base64
 
 class GitHubService:
     def __init__(self, token):
+        if not token:
+            raise ValueError("GitHub token is required")
         self.github = Github(token)
     
     def get_repository(self, repo_full_name):
-        return self.github.get_repo(repo_full_name)
+        if not repo_full_name:
+            raise ValueError("Repository full name is required")
+        try:
+            return self.github.get_repo(repo_full_name)
+        except UnknownObjectException as e:
+            raise ValueError(
+                f"Repository '{repo_full_name}' not found. "
+                f"Check if the repository exists and your token has access to it. "
+                f"Error: {str(e)}"
+            )
+        except GithubException as e:
+            if e.status == 404:
+                raise ValueError(
+                    f"Repository '{repo_full_name}' not found (404). "
+                    f"Possible causes: repository doesn't exist, token lacks access, or invalid repository name. "
+                    f"Error: {str(e)}"
+                )
+            elif e.status == 401:
+                raise ValueError(
+                    f"Authentication failed (401). Check if your GitHub token is valid and has the required permissions. "
+                    f"Error: {str(e)}"
+                )
+            elif e.status == 403:
+                raise ValueError(
+                    f"Access forbidden (403). Your token may not have permission to access repository '{repo_full_name}'. "
+                    f"Error: {str(e)}"
+                )
+            else:
+                raise ValueError(f"GitHub API error: {str(e)}")
     
     def get_file_content(self, repo, file_path, ref='main'):
         try:

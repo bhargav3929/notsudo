@@ -6,7 +6,13 @@ class PRService:
         self.ai_service = ai_service
     
     def process_issue(self, repo_full_name, issue_number, issue_title, issue_body, comment_body):
-        repo = self.github_service.get_repository(repo_full_name)
+        try:
+            repo = self.github_service.get_repository(repo_full_name)
+        except ValueError as e:
+            return {
+                'success': False,
+                'message': str(e)
+            }
         
         codebase_files = self.github_service.get_relevant_files(repo, max_files=15)
         

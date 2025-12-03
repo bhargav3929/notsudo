@@ -1,29 +1,33 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import os
 import json
 import hmac
 import hashlib
 from datetime import datetime
-from services.github_service import GitHubService
+from pathlib import Path
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
+
 from services.ai_service import AIService
+from services.github_service import GitHubService
 from services.pr_service import PRService
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 CORS(app)
 
-config_file = "/tmp/config.json"
 jobs_file = "/tmp/jobs.json"
 
-def load_config():
-    if os.path.exists(config_file):
-        with open(config_file, 'r') as f:
-            return json.load(f)
-    return {}
 
-def save_config(config):
-    with open(config_file, 'w') as f:
-        json.dump(config, f)
+def load_config():
+    return {
+        'github_token': os.environ.get('GITHUB_TOKEN'),
+        'openai_key': os.environ.get('OPENAI_API_KEY'),
+        'webhook_secret': os.environ.get('WEBHOOK_SECRET', '')
+    }
 
 def load_jobs():
     if os.path.exists(jobs_file):
@@ -61,19 +65,9 @@ def verify_github_signature(payload_body, signature_header, secret):
 
 @app.route('/api/config', methods=['POST'])
 def save_configuration():
-    data = request.json
-    github_token = data.get('githubToken')
-    openai_key = data.get('openaiKey')
-    webhook_secret = data.get('webhookSecret', '')
-    
-    config = {
-        'github_token': github_token,
-        'openai_key': openai_key,
-        'webhook_secret': webhook_secret
-    }
-    save_config(config)
-    
-    return jsonify({'message': 'Configuration saved successfully'}), 200
+    return jsonify({
+        'error': 'Configuration is managed with environment variables. Update your .env file instead of using this endpoint.'
+    }), 400
 
 @app.route('/api/config', methods=['GET'])
 def get_configuration():
@@ -134,6 +128,18 @@ def handle_webhook():
     issue_title = issue.get('title')
     issue_body = issue.get('body', '')
     
+    if not repo_full_name:
+        return jsonify({
+            'error': 'Repository full_name is missing from webhook payload',
+            'repository_data': repository
+        }), 400
+    
+    if not issue_number:
+        return jsonify({
+            'error': 'Issue number is missing from webhook payload',
+            'issue_data': issue
+        }), 400
+    
     job = {
         'id': f"{repo_full_name}-{issue_number}-{datetime.now().timestamp()}",
         'repo': repo_full_name,
@@ -166,6 +172,11 @@ def handle_webhook():
         
         return jsonify(result), 200
         
+    except ValueError as e:
+        job['status'] = 'failed'
+        job['error'] = str(e)
+        save_job(job)
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         job['status'] = 'failed'
         job['error'] = str(e)

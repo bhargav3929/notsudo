@@ -1,9 +1,16 @@
 import json
+import os
 from openai import OpenAI
 
 class AIService:
     def __init__(self, api_key):
-        self.client = OpenAI(api_key=api_key)
+        # Initialize OpenAI client with explicit configuration
+        # Avoid passing any proxy-related parameters that might cause issues
+        client_kwargs = {
+            'api_key': api_key
+        }
+        # Only add timeout if needed, avoid passing proxies parameter
+        self.client = OpenAI(**client_kwargs)
         
     def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files):
         codebase_context = "\n\n".join([
