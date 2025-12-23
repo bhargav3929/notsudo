@@ -1,6 +1,10 @@
+import base64
+import logging
+
 from github import Github
 from github.GithubException import GithubException, UnknownObjectException
-import base64
+
+logger = logging.getLogger(__name__)
 
 class GitHubService:
     def __init__(self, token):
@@ -45,7 +49,10 @@ class GitHubService:
             if file_content.encoding == 'base64':
                 return base64.b64decode(file_content.content).decode('utf-8')
             return file_content.decoded_content.decode('utf-8')
-        except Exception as e:
+        except UnknownObjectException:
+            return None
+        except GithubException as e:
+            logger.warning(f"Failed to get file content for {file_path}: {e}")
             return None
     
     def get_directory_structure(self, repo, path='', ref='main'):
@@ -54,19 +61,14 @@ class GitHubService:
             items = repo.get_contents(path, ref=ref)
             for item in items:
                 if item.type == 'dir':
-                    contents.append({
-                        'path': item.path,
-                        'type': 'directory'
-                    })
+                    contents.append({'path': item.path, 'type': 'directory'})
                     contents.extend(self.get_directory_structure(repo, item.path, ref))
                 else:
-                    contents.append({
-                        'path': item.path,
-                        'type': 'file',
-                        'size': item.size
-                    })
-        except Exception as e:
+                    contents.append({'path': item.path, 'type': 'file', 'size': item.size})
+        except UnknownObjectException:
             pass
+        except GithubException as e:
+            logger.warning(f"Failed to get directory structure for {path}: {e}")
         return contents
     
     def get_relevant_files(self, repo, max_files=20):
@@ -122,11 +124,12 @@ class GitHubService:
             }
     
     def create_branch(self, repo, branch_name, source_branch='main'):
-        source = repo.get_branch(source_branch)
         try:
+            source = repo.get_branch(source_branch)
             repo.create_git_ref(ref=f'refs/heads/{branch_name}', sha=source.commit.sha)
             return True
-        except Exception as e:
+        except GithubException as e:
+            logger.error(f"Failed to create branch {branch_name}: {e}")
             return False
     
     def update_file(self, repo, file_path, content, message, branch):
@@ -140,7 +143,7 @@ class GitHubService:
                 branch=branch
             )
             return True
-        except Exception as e:
+        except UnknownObjectException:
             try:
                 repo.create_file(
                     path=file_path,
@@ -149,5 +152,9 @@ class GitHubService:
                     branch=branch
                 )
                 return True
-            except Exception as create_error:
+            except GithubException as e:
+                logger.error(f"Failed to create file {file_path}: {e}")
                 return False
+        except GithubException as e:
+            logger.error(f"Failed to update file {file_path}: {e}")
+            return False
