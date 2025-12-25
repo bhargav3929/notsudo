@@ -1,6 +1,7 @@
 "use client";
 
 import { Play } from "lucide-react";
+import Image from "next/image";
 
 interface Testimonial {
   company: string;
@@ -52,7 +53,7 @@ export function TestimonialsSection() {
             Why developers choose us
           </h2>
           <p className="text-lg text-gray-400 max-w-2xl mx-auto">
-            Here's what engineering teams say about our platform
+            Here&apos;s what engineering teams say about our platform
           </p>
         </div>
 
@@ -110,14 +111,16 @@ export function TestimonialsSection() {
                 
                 {/* Quote */}
                 <p className="text-gray-300 leading-relaxed mb-4">
-                  "{testimonial.quote}"
+                  &ldquo;{testimonial.quote}&rdquo;
                 </p>
                 
                 {/* Author */}
                 <div className="flex items-center gap-3">
-                  <img
+                  <Image
                     src={testimonial.avatar}
                     alt={testimonial.author}
+                    width={40}
+                    height={40}
                     className="w-10 h-10 rounded-full bg-white/10"
                   />
                   <div>
