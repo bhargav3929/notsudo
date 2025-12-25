@@ -1,23 +1,31 @@
 import base64
-import logging
 
 from github import Github
 from github.GithubException import GithubException, UnknownObjectException
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
 
 class GitHubService:
     def __init__(self, token):
         if not token:
             raise ValueError("GitHub token is required")
         self.github = Github(token)
+        logger.info("github_service_initialized")
     
     def get_repository(self, repo_full_name):
         if not repo_full_name:
             raise ValueError("Repository full name is required")
+        
+        logger.info("fetching_repository", repo=repo_full_name)
+        
         try:
-            return self.github.get_repo(repo_full_name)
+            repo = self.github.get_repo(repo_full_name)
+            logger.info("repository_fetched", repo=repo_full_name, default_branch=repo.default_branch)
+            return repo
         except UnknownObjectException as e:
+            logger.error("repository_not_found", repo=repo_full_name, error=str(e))
             raise ValueError(
                 f"Repository '{repo_full_name}' not found. "
                 f"Check if the repository exists and your token has access to it. "
@@ -25,34 +33,43 @@ class GitHubService:
             )
         except GithubException as e:
             if e.status == 404:
+                logger.error("repository_404", repo=repo_full_name)
                 raise ValueError(
                     f"Repository '{repo_full_name}' not found (404). "
                     f"Possible causes: repository doesn't exist, token lacks access, or invalid repository name. "
                     f"Error: {str(e)}"
                 )
             elif e.status == 401:
+                logger.error("authentication_failed", status=401)
                 raise ValueError(
                     f"Authentication failed (401). Check if your GitHub token is valid and has the required permissions. "
                     f"Error: {str(e)}"
                 )
             elif e.status == 403:
+                logger.error("access_forbidden", repo=repo_full_name, status=403)
                 raise ValueError(
                     f"Access forbidden (403). Your token may not have permission to access repository '{repo_full_name}'. "
                     f"Error: {str(e)}"
                 )
             else:
+                logger.error("github_api_error", status=e.status, error=str(e))
                 raise ValueError(f"GitHub API error: {str(e)}")
     
     def get_file_content(self, repo, file_path, ref='main'):
         try:
             file_content = repo.get_contents(file_path, ref=ref)
             if file_content.encoding == 'base64':
-                return base64.b64decode(file_content.content).decode('utf-8')
-            return file_content.decoded_content.decode('utf-8')
+                content = base64.b64decode(file_content.content).decode('utf-8')
+            else:
+                content = file_content.decoded_content.decode('utf-8')
+            
+            logger.debug("file_content_fetched", path=file_path, size=len(content))
+            return content
         except UnknownObjectException:
+            logger.debug("file_not_found", path=file_path)
             return None
         except GithubException as e:
-            logger.warning(f"Failed to get file content for {file_path}: {e}")
+            logger.warning("file_fetch_failed", path=file_path, error=str(e))
             return None
     
     def get_directory_structure(self, repo, path='', ref='main'):
@@ -68,10 +85,12 @@ class GitHubService:
         except UnknownObjectException:
             pass
         except GithubException as e:
-            logger.warning(f"Failed to get directory structure for {path}: {e}")
+            logger.warning("directory_fetch_failed", path=path, error=str(e))
         return contents
     
     def get_relevant_files(self, repo, max_files=20):
+        logger.info("fetching_relevant_files", repo=repo.full_name, max_files=max_files)
+        
         structure = self.get_directory_structure(repo)
         
         files = [item for item in structure if item['type'] == 'file']
@@ -93,6 +112,14 @@ class GitHubService:
         
         selected_files = priority_files[:max_files] if len(priority_files) > 0 else filtered_files[:max_files]
         
+        logger.info(
+            "files_selected",
+            total_files=len(files),
+            filtered_files=len(filtered_files),
+            priority_files=len(priority_files),
+            selected=len(selected_files)
+        )
+        
         files_with_content = []
         for file_info in selected_files:
             content = self.get_file_content(repo, file_info['path'])
@@ -102,9 +129,18 @@ class GitHubService:
                     'content': content
                 })
         
+        logger.info("files_loaded", count=len(files_with_content))
         return files_with_content
     
     def create_pull_request(self, repo, title, body, head_branch, base_branch='main'):
+        logger.info(
+            "creating_pull_request",
+            repo=repo.full_name,
+            head=head_branch,
+            base=base_branch,
+            title=title
+        )
+        
         try:
             pr = repo.create_pull(
                 title=title,
@@ -112,27 +148,34 @@ class GitHubService:
                 head=head_branch,
                 base=base_branch
             )
+            logger.info("pull_request_created", pr_number=pr.number, pr_url=pr.html_url)
             return {
                 'success': True,
                 'pr_url': pr.html_url,
                 'pr_number': pr.number
             }
         except Exception as e:
+            logger.error("pull_request_failed", error=str(e))
             return {
                 'success': False,
                 'error': str(e)
             }
     
     def create_branch(self, repo, branch_name, source_branch='main'):
+        logger.info("creating_branch", branch=branch_name, source=source_branch)
+        
         try:
             source = repo.get_branch(source_branch)
             repo.create_git_ref(ref=f'refs/heads/{branch_name}', sha=source.commit.sha)
+            logger.info("branch_created", branch=branch_name, sha=source.commit.sha[:8])
             return True
         except GithubException as e:
-            logger.error(f"Failed to create branch {branch_name}: {e}")
+            logger.error("branch_creation_failed", branch=branch_name, error=str(e))
             return False
     
     def update_file(self, repo, file_path, content, message, branch):
+        logger.info("updating_file", path=file_path, branch=branch)
+        
         try:
             file = repo.get_contents(file_path, ref=branch)
             repo.update_file(
@@ -142,8 +185,10 @@ class GitHubService:
                 sha=file.sha,
                 branch=branch
             )
+            logger.info("file_updated", path=file_path)
             return True
         except UnknownObjectException:
+            logger.info("file_not_exists_creating", path=file_path)
             try:
                 repo.create_file(
                     path=file_path,
@@ -151,10 +196,11 @@ class GitHubService:
                     content=content,
                     branch=branch
                 )
+                logger.info("file_created", path=file_path)
                 return True
             except GithubException as e:
-                logger.error(f"Failed to create file {file_path}: {e}")
+                logger.error("file_creation_failed", path=file_path, error=str(e))
                 return False
         except GithubException as e:
-            logger.error(f"Failed to update file {file_path}: {e}")
+            logger.error("file_update_failed", path=file_path, error=str(e))
             return False

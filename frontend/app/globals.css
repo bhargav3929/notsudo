@@ -57,3 +57,189 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Landing Page Custom Styles */
+@layer utilities {
+  /* Glow Effects */
+  .glow-blue {
+    box-shadow: 0 0 40px rgba(59, 130, 246, 0.4),
+                0 0 80px rgba(59, 130, 246, 0.2),
+                0 0 120px rgba(59, 130, 246, 0.1);
+  }
+  
+  .glow-purple {
+    box-shadow: 0 0 40px rgba(139, 92, 246, 0.4),
+                0 0 80px rgba(139, 92, 246, 0.2),
+                0 0 120px rgba(139, 92, 246, 0.1);
+  }
+  
+  .glow-teal {
+    box-shadow: 0 0 40px rgba(20, 184, 166, 0.4),
+                0 0 80px rgba(20, 184, 166, 0.2),
+                0 0 120px rgba(20, 184, 166, 0.1);
+  }
+
+  /* Glassmorphism */
+  .glass {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .glass-card {
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.02) 100%
+    );
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* Gradient Text */
+  .gradient-text {
+    background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 50%, #34d399 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .gradient-text-blue {
+    background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Gradient Borders */
+  .gradient-border {
+    position: relative;
+    background: transparent;
+  }
+  
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6, #14b8a6);
+    -webkit-mask: 
+      linear-gradient(#fff 0 0) content-box, 
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+
+  /* Animated Gradient Background */
+  .animated-gradient {
+    background: linear-gradient(
+      -45deg,
+      #0a0a0f,
+      #1a1a2e,
+      #0f0f1a,
+      #16162a
+    );
+    background-size: 400% 400%;
+    animation: gradientShift 15s ease infinite;
+  }
+
+  /* Hero Horizon Effect */
+  .hero-horizon {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero-horizon::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 200%;
+    height: 600px;
+    background: radial-gradient(
+      ellipse at center bottom,
+      rgba(59, 130, 246, 0.15) 0%,
+      rgba(139, 92, 246, 0.1) 30%,
+      transparent 70%
+    );
+    border-radius: 50% 50% 0 0;
+    pointer-events: none;
+  }
+
+  /* Floating Animation */
+  .float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  /* Pulse Glow */
+  .pulse-glow {
+    animation: pulseGlow 3s ease-in-out infinite;
+  }
+}
+
+/* Keyframe Animations */
+@keyframes gradientShift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-20px);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  animation: fadeInUp 0.8s ease-out forwards;
+}
+
+.fade-in-up-delay-1 {
+  animation: fadeInUp 0.8s ease-out 0.1s forwards;
+  opacity: 0;
+}
+
+.fade-in-up-delay-2 {
+  animation: fadeInUp 0.8s ease-out 0.2s forwards;
+  opacity: 0;
+}
+
+.fade-in-up-delay-3 {
+  animation: fadeInUp 0.8s ease-out 0.3s forwards;
+  opacity: 0;
+}

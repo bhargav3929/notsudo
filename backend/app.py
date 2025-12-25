@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 from services.ai_service import AIService
 from services.github_service import GitHubService
 from services.pr_service import PRService
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -25,7 +28,7 @@ jobs_file = "/tmp/jobs.json"
 def load_config():
     return {
         'github_token': os.environ.get('GITHUB_TOKEN'),
-        'openai_key': os.environ.get('OPENAI_API_KEY'),
+        'openrouter_key': os.environ.get('OPENROUTER_API_KEY'),
         'webhook_secret': os.environ.get('WEBHOOK_SECRET', '')
     }
 
@@ -74,7 +77,7 @@ def get_configuration():
     config = load_config()
     return jsonify({
         'hasGithubToken': bool(config.get('github_token')),
-        'hasOpenaiKey': bool(config.get('openai_key')),
+        'hasOpenrouterKey': bool(config.get('openrouter_key')),
         'hasWebhookSecret': bool(config.get('webhook_secret'))
     }), 200
 
@@ -102,6 +105,7 @@ def handle_webhook():
     data = request.json
     
     if not data:
+        logger.warning("webhook_no_data")
         return jsonify({'error': 'No data provided'}), 400
     
     action = data.get('action')
@@ -109,18 +113,26 @@ def handle_webhook():
     issue = data.get('issue', {})
     repository = data.get('repository', {})
     
+    logger.info(
+        "webhook_received",
+        action=action,
+        repo=repository.get('full_name'),
+        issue_number=issue.get('number')
+    )
+    
     if action != 'created':
         return jsonify({'message': 'Ignored: not a comment creation'}), 200
     
     comment_body = comment.get('body', '')
     
     if '@my-tool' not in comment_body:
+        logger.debug("webhook_ignored", reason="my-tool not mentioned")
         return jsonify({'message': 'Ignored: @my-tool not mentioned'}), 200
     
     github_token = config.get('github_token')
-    openai_key = config.get('openai_key')
+    openrouter_key = config.get('openrouter_key')
     
-    if not github_token or not openai_key:
+    if not github_token or not openrouter_key:
         return jsonify({'error': 'Missing API credentials'}), 500
     
     repo_full_name = repository.get('full_name')
@@ -146,16 +158,24 @@ def handle_webhook():
         'issueNumber': issue_number,
         'issueTitle': issue_title,
         'status': 'processing',
+        'stage': 'analyzing',
+        'retryCount': 0,
         'createdAt': datetime.now().isoformat(),
         'prUrl': None,
-        'error': None
+        'error': None,
+        'logs': ['Job started'],
+        'validationLogs': []
     }
     save_job(job)
     
     try:
         github_service = GitHubService(github_token)
-        ai_service = AIService(openai_key)
+        ai_service = AIService(openrouter_key)
         pr_service = PRService(github_service, ai_service)
+        
+        job['stage'] = 'generating'
+        job['logs'].append('AI analyzing issue...')
+        save_job(job)
         
         result = pr_service.process_issue(
             repo_full_name=repo_full_name,
@@ -168,18 +188,25 @@ def handle_webhook():
         job['status'] = 'completed' if result.get('success') else 'failed'
         job['prUrl'] = result.get('pr_url')
         job['error'] = result.get('message') if not result.get('success') else None
+        job['validationLogs'] = result.get('validation_logs', [])
+        job['stage'] = 'completed' if result.get('success') else 'failed'
+        job['logs'].append(f"Result: {'PR created' if result.get('success') else result.get('message', 'Failed')}")
         save_job(job)
         
         return jsonify(result), 200
         
     except ValueError as e:
         job['status'] = 'failed'
+        job['stage'] = 'error'
         job['error'] = str(e)
+        job['logs'].append(f'Error: {str(e)}')
         save_job(job)
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         job['status'] = 'failed'
+        job['stage'] = 'error'
         job['error'] = str(e)
+        job['logs'].append(f'Error: {str(e)}')
         save_job(job)
         return jsonify({'error': str(e)}), 500
 
@@ -188,9 +215,27 @@ def get_jobs():
     jobs = load_jobs()
     return jsonify(jobs), 200
 
+
+@app.route('/api/jobs/<job_id>/logs', methods=['GET'])
+def get_job_logs(job_id):
+    """Get detailed logs for a specific job."""
+    jobs = load_jobs()
+    for job in jobs:
+        if job.get('id') == job_id:
+            return jsonify({
+                'id': job_id,
+                'logs': job.get('logs', []),
+                'validationLogs': job.get('validationLogs', []),
+                'retryCount': job.get('retryCount', 0),
+                'stage': job.get('stage', 'unknown')
+            }), 200
+    return jsonify({'error': 'Job not found'}), 404
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'healthy'}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
+

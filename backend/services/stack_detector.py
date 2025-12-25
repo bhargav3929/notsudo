@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -10,6 +10,8 @@ class StackConfig:
     install_command: str
     test_command: str
     build_command: Optional[str] = None
+    dockerfile_path: Optional[str] = None
+    docker_compose_path: Optional[str] = None
 
 
 STACK_CONFIGS = {
@@ -67,10 +69,45 @@ class StackDetectorService:
         'go.mod': 'go',
         'Cargo.toml': 'rust',
     }
+    
+    DOCKER_FILES = {
+        'Dockerfile',
+        'dockerfile',
+    }
+    
+    DOCKER_COMPOSE_FILES = {
+        'docker-compose.yml',
+        'docker-compose.yaml',
+        'compose.yml',
+        'compose.yaml',
+    }
 
     def detect_from_file_list(self, file_paths: list[str]) -> Optional[StackConfig]:
         filenames = {path.split('/')[-1] for path in file_paths}
+        path_map = {path.split('/')[-1]: path for path in file_paths}
         
+        # Detect base stack config
+        stack_config = self._detect_stack(filenames)
+        if stack_config is None:
+            return None
+        
+        # Detect Docker configuration and enhance the config
+        dockerfile_path = self._find_dockerfile(file_paths)
+        compose_path = self._find_docker_compose(file_paths)
+        
+        # Return new config with Docker paths if found
+        if dockerfile_path or compose_path:
+            from dataclasses import replace
+            return replace(
+                stack_config,
+                dockerfile_path=dockerfile_path,
+                docker_compose_path=compose_path
+            )
+        
+        return stack_config
+    
+    def _detect_stack(self, filenames: set[str]) -> Optional[StackConfig]:
+        """Detect the base technology stack from filenames."""
         if 'package.json' in filenames:
             if 'yarn.lock' in filenames:
                 return STACK_CONFIGS['nodejs-yarn']
@@ -86,8 +123,45 @@ class StackDetectorService:
             return STACK_CONFIGS['python']
         
         return None
+    
+    def _find_dockerfile(self, file_paths: list[str]) -> Optional[str]:
+        """Find Dockerfile in the file list, preferring root-level files."""
+        # Priority order: root Dockerfile > nested Dockerfile
+        candidates = []
+        for path in file_paths:
+            filename = path.split('/')[-1]
+            if filename.lower() == 'dockerfile':
+                depth = path.count('/')
+                candidates.append((depth, path))
+        
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1]
+        
+        # Check for .devcontainer Dockerfile
+        for path in file_paths:
+            if '.devcontainer' in path and 'dockerfile' in path.lower():
+                return path
+        
+        return None
+    
+    def _find_docker_compose(self, file_paths: list[str]) -> Optional[str]:
+        """Find docker-compose file in the file list."""
+        for path in file_paths:
+            filename = path.split('/')[-1]
+            if filename in self.DOCKER_COMPOSE_FILES:
+                return path
+        return None
+    
+    def has_docker_config(self, file_paths: list[str]) -> bool:
+        """Check if the project has any Docker configuration."""
+        return (
+            self._find_dockerfile(file_paths) is not None or
+            self._find_docker_compose(file_paths) is not None
+        )
 
     def detect_from_github_repo(self, github_service, repo) -> Optional[StackConfig]:
         structure = github_service.get_directory_structure(repo, path='', ref='main')
         file_paths = [item['path'] for item in structure if item['type'] == 'file']
         return self.detect_from_file_list(file_paths)
+
