@@ -102,11 +102,13 @@ def handle_webhook():
         if not verify_github_signature(request.data, signature, webhook_secret):
             return jsonify({'error': 'Invalid signature'}), 403
     
-    data = request.json
+    # Use force=True to parse JSON regardless of Content-Type header
+    # This fixes 415 errors when Content-Type is not set to application/json
+    data = request.get_json(force=True, silent=True)
     
     if not data:
-        logger.warning("webhook_no_data")
-        return jsonify({'error': 'No data provided'}), 400
+        logger.warning("webhook_no_data", content_type=request.content_type)
+        return jsonify({'error': 'No data provided or invalid JSON'}), 400
     
     action = data.get('action')
     comment = data.get('comment', {})
