@@ -97,17 +97,22 @@ def handle_webhook():
     config = load_config()
     webhook_secret = config.get('webhook_secret')
     
+    # Read raw data once - it can only be read once from the stream
+    raw_data = request.data
+    
     if webhook_secret:
         signature = request.headers.get('X-Hub-Signature-256')
-        if not verify_github_signature(request.data, signature, webhook_secret):
+        if not verify_github_signature(raw_data, signature, webhook_secret):
             return jsonify({'error': 'Invalid signature'}), 403
     
-    # Use force=True to parse JSON regardless of Content-Type header
-    # This fixes 415 errors when Content-Type is not set to application/json
-    data = request.get_json(force=True, silent=True)
+    # Parse JSON from the raw data we already read
+    try:
+        data = json.loads(raw_data) if raw_data else None
+    except (json.JSONDecodeError, TypeError):
+        data = None
     
     if not data:
-        logger.warning("webhook_no_data", content_type=request.content_type)
+        logger.warning("webhook_no_data", content_type=request.content_type, body_length=len(raw_data) if raw_data else 0)
         return jsonify({'error': 'No data provided or invalid JSON'}), 400
     
     action = data.get('action')
