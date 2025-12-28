@@ -111,7 +111,7 @@ export function HowItWorksSection() {
             href="/login"
             className="inline-flex items-center gap-2 px-6 py-3 text-xs font-mono text-black bg-white hover:bg-gray-100 transition-all duration-200 border border-white"
           >
-            TRY IT NOW — IT'S FREE
+            TRY IT NOW — IT&apos;S FREE
           </a>
         </div>
       </div>
