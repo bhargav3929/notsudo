@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-from services.ai_service import AIService
+from services.groq_service import GroqService
 from services.github_service import GitHubService
 from services.pr_service import PRService
 from utils.logger import get_logger
@@ -28,7 +28,7 @@ jobs_file = "/tmp/jobs.json"
 def load_config():
     return {
         'github_token': os.environ.get('GITHUB_TOKEN'),
-        'openrouter_key': os.environ.get('OPENROUTER_API_KEY'),
+        'groq_key': os.environ.get('GROQ_API_KEY'),
         'webhook_secret': os.environ.get('WEBHOOK_SECRET', '')
     }
 
@@ -77,7 +77,7 @@ def get_configuration():
     config = load_config()
     return jsonify({
         'hasGithubToken': bool(config.get('github_token')),
-        'hasOpenrouterKey': bool(config.get('openrouter_key')),
+        'hasGroqKey': bool(config.get('groq_key')),
         'hasWebhookSecret': bool(config.get('webhook_secret'))
     }), 200
 
@@ -137,9 +137,9 @@ def handle_webhook():
         return jsonify({'message': 'Ignored: @my-tool not mentioned'}), 200
     
     github_token = config.get('github_token')
-    openrouter_key = config.get('openrouter_key')
+    groq_key = config.get('groq_key')
     
-    if not github_token or not openrouter_key:
+    if not github_token or not groq_key:
         return jsonify({'error': 'Missing API credentials'}), 500
     
     repo_full_name = repository.get('full_name')
@@ -177,7 +177,7 @@ def handle_webhook():
     
     try:
         github_service = GitHubService(github_token)
-        ai_service = AIService(openrouter_key)
+        ai_service = GroqService(api_key=groq_key)
         pr_service = PRService(github_service, ai_service)
         
         job['stage'] = 'generating'
@@ -234,9 +234,9 @@ def test_issue():
     """
     config = load_config()
     github_token = config.get('github_token')
-    openrouter_key = config.get('openrouter_key')
+    groq_key = config.get('groq_key')
     
-    if not github_token or not openrouter_key:
+    if not github_token or not groq_key:
         return jsonify({'error': 'Missing API credentials'}), 500
     
     data = request.get_json()
@@ -281,7 +281,7 @@ def test_issue():
     
     try:
         github_service = GitHubService(github_token)
-        ai_service = AIService(openrouter_key)
+        ai_service = GroqService(api_key=groq_key)
         pr_service = PRService(github_service, ai_service)
         
         job['stage'] = 'generating'
@@ -372,7 +372,7 @@ def health_check():
     # Check required environment variables
     checks = {
         'github_token': bool(config.get('github_token')),
-        'openrouter_key': bool(config.get('openrouter_key')),
+        'groq_key': bool(config.get('groq_key')),
     }
     
     all_healthy = all(checks.values())
