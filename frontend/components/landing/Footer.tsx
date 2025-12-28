@@ -1,6 +1,6 @@
 "use client";
 
-import { Github, Twitter, Linkedin, ArrowRight } from "lucide-react";
+import { Twitter, Linkedin } from "lucide-react";
 
 const navigation = {
   product: [
@@ -12,7 +12,6 @@ const navigation = {
   developers: [
     { name: "Documentation", href: "#docs" },
     { name: "API Reference", href: "#api" },
-    { name: "GitHub", href: "https://github.com" },
     { name: "Discord", href: "#discord" },
   ],
   company: [
@@ -29,7 +28,6 @@ const navigation = {
 };
 
 const socialLinks = [
-  { name: "GitHub", icon: Github, href: "https://github.com" },
   { name: "Twitter", icon: Twitter, href: "https://twitter.com" },
   { name: "LinkedIn", icon: Linkedin, href: "https://linkedin.com" },
 ];
