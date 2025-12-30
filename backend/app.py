@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from services.groq_service import GroqService
 from services.github_service import GitHubService
 from services.pr_service import PRService
-from services.supabase_service import SupabaseService
+from services import db as database
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,9 +22,6 @@ load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 CORS(app)
-
-# Initialize Supabase service (optional - falls back to JSON file if not configured)
-supabase_service = SupabaseService()
 
 jobs_file = "/tmp/jobs.json"
 
@@ -37,11 +34,9 @@ def load_config():
     }
 
 def load_jobs():
-    """Load jobs from Supabase or fall back to JSON file."""
-    if supabase_service.is_available():
-        jobs = supabase_service.get_jobs()
-        # Convert snake_case to camelCase for frontend
-        return [_convert_job_to_camel(job) for job in jobs]
+    """Load jobs from database or fall back to JSON file."""
+    if database.is_db_available():
+        return database.get_jobs()
     
     # Fallback to JSON file
     if os.path.exists(jobs_file):
@@ -50,9 +45,13 @@ def load_jobs():
     return []
 
 def save_job(job):
-    """Save job to Supabase or fall back to JSON file."""
-    if supabase_service.is_available():
-        supabase_service.save_job(job)
+    """Save job to database or fall back to JSON file."""
+    if database.is_db_available():
+        existing = database.get_job_by_id(job.get('id'))
+        if existing:
+            database.update_job(job.get('id'), job)
+        else:
+            database.insert_job(job)
         return
     
     # Fallback to JSON file
@@ -71,23 +70,6 @@ def save_job(job):
     jobs = jobs[:100]
     with open(jobs_file, 'w') as f:
         json.dump(jobs, f)
-
-def _convert_job_to_camel(job):
-    """Convert job from snake_case (DB) to camelCase (API)."""
-    return {
-        'id': job.get('id'),
-        'repo': job.get('repo'),
-        'issueNumber': job.get('issue_number'),
-        'issueTitle': job.get('issue_title'),
-        'status': job.get('status'),
-        'stage': job.get('stage'),
-        'retryCount': job.get('retry_count', 0),
-        'prUrl': job.get('pr_url'),
-        'error': job.get('error'),
-        'logs': job.get('logs', []),
-        'validationLogs': job.get('validation_logs', []),
-        'createdAt': job.get('created_at'),
-    }
 
 def verify_github_signature(payload_body, signature_header, secret):
     if not signature_header or not secret:
@@ -570,86 +552,37 @@ console.log("=".repeat(50));
 # =====================
 # Authentication Routes
 # =====================
+# NOTE: Authentication is now handled by Better Auth on the frontend.
+# These routes are kept for backward compatibility but will redirect.
 
 @app.route('/api/auth/signup', methods=['POST'])
 def auth_signup():
-    """Register a new user."""
-    if not supabase_service.is_available():
-        return jsonify({'error': 'Authentication not configured'}), 503
-    
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    email = data.get('email')
-    password = data.get('password')
-    
-    if not email or not password:
-        return jsonify({'error': 'Email and password are required'}), 400
-    
-    result = supabase_service.sign_up(email, password)
-    
-    if 'error' in result:
-        return jsonify(result), 400
-    
-    return jsonify(result), 201
+    """Auth now handled by Better Auth on frontend."""
+    return jsonify({
+        'error': 'Please use the frontend authentication. Visit /login to sign up with GitHub.'
+    }), 410
 
 
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
-    """Login an existing user."""
-    if not supabase_service.is_available():
-        return jsonify({'error': 'Authentication not configured'}), 503
-    
-    data = request.get_json()
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-    
-    email = data.get('email')
-    password = data.get('password')
-    
-    if not email or not password:
-        return jsonify({'error': 'Email and password are required'}), 400
-    
-    result = supabase_service.sign_in(email, password)
-    
-    if 'error' in result:
-        return jsonify(result), 401
-    
-    return jsonify(result), 200
+    """Auth now handled by Better Auth on frontend."""
+    return jsonify({
+        'error': 'Please use the frontend authentication. Visit /login to sign in with GitHub.'
+    }), 410
 
 
 @app.route('/api/auth/logout', methods=['POST'])
 def auth_logout():
-    """Logout the current user."""
-    if not supabase_service.is_available():
-        return jsonify({'error': 'Authentication not configured'}), 503
-    
-    result = supabase_service.sign_out()
-    
-    if 'error' in result:
-        return jsonify(result), 400
-    
-    return jsonify(result), 200
+    """Auth now handled by Better Auth on frontend."""
+    return jsonify({'message': 'Use frontend /api/auth/signout for logout'}), 410
 
 
 @app.route('/api/auth/user', methods=['GET'])
 def auth_user():
-    """Get current user from access token."""
-    if not supabase_service.is_available():
-        return jsonify({'error': 'Authentication not configured'}), 503
-    
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith('Bearer '):
-        return jsonify({'error': 'No access token provided'}), 401
-    
-    access_token = auth_header.split(' ')[1]
-    user = supabase_service.get_user(access_token)
-    
-    if not user:
-        return jsonify({'error': 'Invalid or expired token'}), 401
-    
-    return jsonify({'user': user}), 200
+    """Auth now handled by Better Auth on frontend."""
+    return jsonify({
+        'error': 'Please use the frontend /api/auth/session to get user info.'
+    }), 410
 
 
 # =====================
@@ -659,7 +592,7 @@ def auth_user():
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """Get job and issue statistics."""
-    if not supabase_service.is_available():
+    if not database.is_db_available():
         # Return stats from JSON file fallback
         jobs = load_jobs()
         return jsonify({
@@ -667,19 +600,12 @@ def get_stats():
             'completed_jobs': len([j for j in jobs if j.get('status') == 'completed']),
             'failed_jobs': len([j for j in jobs if j.get('status') == 'failed']),
             'processing_jobs': len([j for j in jobs if j.get('status') == 'processing']),
-            'total_issues': 0
+            'total_issues': 0,
+            'total_repos': 0
         }), 200
     
-    # Get user from token if provided
-    user_id = None
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        access_token = auth_header.split(' ')[1]
-        user = supabase_service.get_user(access_token)
-        if user:
-            user_id = user.get('id')
-    
-    stats = supabase_service.get_stats(user_id=user_id)
+    # Get stats from database
+    stats = database.get_stats()
     
     if 'error' in stats:
         return jsonify(stats), 500
