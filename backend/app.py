@@ -193,6 +193,7 @@ def handle_webhook():
         )
         
         job['status'] = 'completed' if result.get('success') else 'failed'
+        job['completedAt'] = datetime.now().isoformat()
         job['prUrl'] = result.get('pr_url')
         job['error'] = result.get('message') if not result.get('success') else None
         job['validationLogs'] = result.get('validation_logs', [])
@@ -204,6 +205,7 @@ def handle_webhook():
         
     except ValueError as e:
         job['status'] = 'failed'
+        job['completedAt'] = datetime.now().isoformat()
         job['stage'] = 'error'
         job['error'] = str(e)
         job['logs'].append(f'Error: {str(e)}')
@@ -211,6 +213,7 @@ def handle_webhook():
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         job['status'] = 'failed'
+        job['completedAt'] = datetime.now().isoformat()
         job['stage'] = 'error'
         job['error'] = str(e)
         job['logs'].append(f'Error: {str(e)}')
@@ -297,6 +300,7 @@ def test_issue():
         )
         
         job['status'] = 'completed' if result.get('success') else 'failed'
+        job['completedAt'] = datetime.now().isoformat()
         job['prUrl'] = result.get('pr_url')
         job['error'] = result.get('message') if not result.get('success') else None
         job['validationLogs'] = result.get('validation_logs', [])
@@ -308,6 +312,7 @@ def test_issue():
         
     except ValueError as e:
         job['status'] = 'failed'
+        job['completedAt'] = datetime.now().isoformat()
         job['stage'] = 'error'
         job['error'] = str(e)
         job['logs'].append(f'Error: {str(e)}')
@@ -315,6 +320,7 @@ def test_issue():
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         job['status'] = 'failed'
+        job['completedAt'] = datetime.now().isoformat()
         job['stage'] = 'error'
         job['error'] = str(e)
         job['logs'].append(f'Error: {str(e)}')
