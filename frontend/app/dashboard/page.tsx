@@ -6,7 +6,6 @@ import { Sidebar } from "@/components/dashboard/Sidebar";
 import { JobsTable } from "@/components/dashboard/jobs/JobsTable";
 import { OnboardingModal } from "@/components/dashboard/OnboardingModal";
 import { StatsCard } from "@/components/dashboard/StatsCard";
-import { JobsTable } from "@/components/dashboard/JobsTable";
 import { RepositoriesGrid } from "@/components/dashboard/RepositoriesGrid";
 import { useSession } from "@/lib/auth-client";
 import { 
@@ -59,6 +58,7 @@ export default function Dashboard() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!session?.user?.id) return;
@@ -119,6 +119,23 @@ export default function Dashboard() {
     }
   }, [session, isPending, router]);
 
+  // Check if onboarding has been seen
+  useEffect(() => {
+    const hasSeenOnboarding = localStorage.getItem("notsudo_onboarding_seen");
+    if (!hasSeenOnboarding) {
+      setShowOnboarding(true);
+    }
+  }, []);
+
+  const handleCloseOnboarding = () => {
+    setShowOnboarding(false);
+    localStorage.setItem("notsudo_onboarding_seen", "true");
+  };
+
+  const handleConnectRepo = () => {
+    router.push("/dashboard/settings");
+  };
+
   // Show loading while checking auth
   if (isPending) {
     return (
@@ -135,25 +152,6 @@ export default function Dashboard() {
   if (!session) {
     return null;
   }
-
-  const handleConnectRepo = () => {
-    router.push("/dashboard/settings");
-  };
-
-  const [showOnboarding, setShowOnboarding] = useState(false);
-
-  useEffect(() => {
-    // Check if onboarding has been seen
-    const hasSeenOnboarding = localStorage.getItem("notsudo_onboarding_seen");
-    if (!hasSeenOnboarding) {
-      setShowOnboarding(true);
-    }
-  }, []);
-
-  const handleCloseOnboarding = () => {
-    setShowOnboarding(false);
-    localStorage.setItem("notsudo_onboarding_seen", "true");
-  };
 
   return (
     <div className="min-h-screen bg-black">
@@ -181,8 +179,6 @@ export default function Dashboard() {
           </div>
         </header>
 
-        <div className="p-8">
-          <JobsTable />
         <div className="p-8 space-y-8">
           {/* Stats Grid */}
           <section>
@@ -221,7 +217,7 @@ export default function Dashboard() {
             <h2 className="font-mono text-xs uppercase tracking-wider text-gray-500 mb-4">
               Recent Jobs
             </h2>
-            <JobsTable jobs={jobs} loading={loading} />
+            <JobsTable />
           </section>
 
           {/* Repositories */}
