@@ -11,7 +11,6 @@ from sqlalchemy import (
     Column, String, Integer, Boolean, Text, DateTime, ForeignKey, JSON, 
     create_engine, Index
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 import uuid
@@ -28,13 +27,13 @@ class User(Base):
     """User table - managed by Better Auth."""
     __tablename__ = 'user'
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(String, primary_key=True) 
     name = Column(String, nullable=False)
     email = Column(String, nullable=False, unique=True)
-    email_verified = Column(DateTime, nullable=True)
+    emailVerified = Column(Boolean, nullable=True)
     image = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    createdAt = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
     # Relationships
     repositories = relationship("Repository", back_populates="user")
@@ -47,31 +46,44 @@ class Session(Base):
     __tablename__ = 'session'
     
     id = Column(String, primary_key=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    userId = Column(String, ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     token = Column(String, nullable=False, unique=True)
-    expires_at = Column(DateTime, nullable=False)
-    ip_address = Column(String, nullable=True)
-    user_agent = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    expiresAt = Column(DateTime, nullable=False)
+    ipAddress = Column(String, nullable=True)
+    userAgent = Column(String, nullable=True)
+    createdAt = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
 class Account(Base):
     """Account table - stores OAuth provider data."""
     __tablename__ = 'account'
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
-    account_id = Column(String, nullable=False)
-    provider_id = Column(String, nullable=False)
-    access_token = Column(Text, nullable=True)
-    refresh_token = Column(Text, nullable=True)
-    access_token_expires_at = Column(DateTime, nullable=True)
-    refresh_token_expires_at = Column(DateTime, nullable=True)
+    id = Column(String, primary_key=True)
+    userId = Column(String, ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    accountId = Column(String, nullable=False)
+    providerId = Column(String, nullable=False)
+    accessToken = Column(Text, nullable=True)
+    refreshToken = Column(Text, nullable=True)
+    accessTokenExpiresAt = Column(DateTime, nullable=True)
+    refreshTokenExpiresAt = Column(DateTime, nullable=True)
     scope = Column(String, nullable=True)
-    id_token = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    idToken = Column(Text, nullable=True)
+    password = Column(String, nullable=True) 
+    createdAt = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class Verification(Base):
+    """Verification table - managed by Better Auth."""
+    __tablename__ = 'verification'
+    
+    id = Column(String, primary_key=True)
+    identifier = Column(String, nullable=False)
+    value = Column(String, nullable=False)
+    expiresAt = Column(DateTime, nullable=False)
+    createdAt = Column(DateTime, default=datetime.utcnow, nullable=True)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=True)
 
 
 # ======================
@@ -83,7 +95,7 @@ class Repository(Base):
     __tablename__ = 'repository'
     
     id = Column(String, primary_key=True)  # GitHub repo ID
-    user_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(String, ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
     name = Column(String, nullable=False)
     full_name = Column(String, nullable=False)  # owner/repo
     description = Column(Text, nullable=True)
@@ -112,7 +124,7 @@ class Job(Base):
     __tablename__ = 'job'
     
     id = Column(String, primary_key=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    user_id = Column(String, ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     repository_id = Column(String, ForeignKey('repository.id', ondelete='SET NULL'), nullable=True)
     issue_number = Column(Integer, nullable=False)
     issue_title = Column(String, nullable=True)
@@ -143,7 +155,7 @@ class Issue(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     github_id = Column(Integer, nullable=False)
-    user_id = Column(UUID(as_uuid=True), ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
+    user_id = Column(String, ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     repository_id = Column(String, ForeignKey('repository.id', ondelete='CASCADE'), nullable=True)
     number = Column(Integer, nullable=False)
     title = Column(String, nullable=False)
@@ -163,22 +175,3 @@ class Issue(Base):
         Index('issue_repository_id_idx', 'repository_id'),
         Index('issue_github_id_idx', 'github_id'),
     )
-
-
-# ======================
-# Database Engine
-# ======================
-
-def get_engine():
-    """Create SQLAlchemy engine from DATABASE_URL."""
-    database_url = os.environ.get('DATABASE_URL', '')
-    if not database_url:
-        raise ValueError("DATABASE_URL environment variable is required")
-    return create_engine(database_url)
-
-
-def get_session():
-    """Create a new database session."""
-    engine = get_engine()
-    Session = sessionmaker(bind=engine)
-    return Session()

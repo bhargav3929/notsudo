@@ -1,24 +1,36 @@
 /**
  * Better Auth - Server Configuration
- * Initialize Better Auth with GitHub OAuth and Drizzle adapter
+ * Using Better Auth's built-in PostgreSQL adapter (Kysely-based)
+ * No external ORM required - Better Auth handles schema and migrations
  */
 import { betterAuth } from "better-auth";
-import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import * as schema from "../../db/src/schema";
+import { Pool } from "pg";
 
-// Initialize database client
-const client = postgres(process.env.DATABASE_URL!);
-const db = drizzle(client, { schema });
+// Debug logging
+const databaseUrl = process.env.DATABASE_URL;
+console.log("[Auth Debug] Initializing Better Auth...");
+console.log("[Auth Debug] DATABASE_URL exists:", !!databaseUrl);
+console.log("[Auth Debug] GITHUB_CLIENT_ID exists:", !!process.env.GITHUB_CLIENT_ID);
+console.log("[Auth Debug] GITHUB_CLIENT_SECRET exists:", !!process.env.GITHUB_CLIENT_SECRET);
+console.log("[Auth Debug] BETTER_AUTH_SECRET exists:", !!process.env.BETTER_AUTH_SECRET);
 
 export const auth = betterAuth({
-  database: drizzleAdapter(db, {
-    provider: "pg",
-    schema: schema,
+  // Use built-in PostgreSQL adapter - pass Pool directly
+  // Better Auth will create tables automatically if they don't exist
+  database: new Pool({
+    connectionString: databaseUrl,
   }),
   
-  // Email/password auth (optional, can disable if only using GitHub)
+  // Base URL for callbacks
+  baseURL: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+  
+  // Trusted origins for CORS
+  trustedOrigins: [
+    "http://localhost:3000",
+    process.env.NEXT_PUBLIC_APP_URL || "",
+  ].filter(Boolean),
+  
+  // Email/password auth disabled (only using GitHub)
   emailAndPassword: {
     enabled: false,
   },
@@ -37,6 +49,12 @@ export const auth = betterAuth({
   session: {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
     updateAge: 60 * 60 * 24, // 1 day
+  },
+  
+  // Debug logging for development
+  logger: {
+    disabled: false,
+    level: "debug",
   },
 });
 

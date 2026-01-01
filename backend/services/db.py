@@ -65,6 +65,16 @@ def get_db_session():
         session.close()
 
 
+def init_db():
+    """Initialize database tables."""
+    engine = get_engine()
+    if engine:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables initialized")
+    else:
+        logger.error("Failed to initialize database: No engine")
+
+
 def is_db_available() -> bool:
     """Check if database is available."""
     try:
