@@ -41,9 +41,9 @@ export function HeroSection() {
   const [, setTick] = useState(0); // Force re-render
 
   // Safe zone for text (approximate grid coordinates)
-  // Rows 4-8, Cols 2-17
+  // Rows 2-9, Cols 1-18
   const isSafeZone = (x: number, y: number) => {
-    return y >= 4 && y <= 8 && x >= 2 && x <= 17;
+    return y >= 2 && y <= 9 && x >= 1 && x <= 18;
   };
 
   const handleMouseEnter = useCallback((index: number) => {
@@ -104,7 +104,7 @@ export function HeroSection() {
 
       // Move Bugs
       bugs = bugs.map(bug => {
-        if (Math.random() > 0.3) return bug;
+        if (Math.random() > 0.7) return bug;
         const moves = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
         const move = moves[Math.floor(Math.random() * moves.length)];
         const newX = bug.x + move.x;
@@ -210,7 +210,7 @@ export function HeroSection() {
   };
 
   return (
-    <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden pt-32 md:pt-20">
+    <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden pt-48 md:pt-20">
       {/* Grid Background */}
       <div className="absolute inset-0 z-0">
         <div
