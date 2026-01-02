@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { ChevronDown, Check } from "lucide-react";
 
 // Grid configuration
 const GRID_COLS = 20;
@@ -10,8 +11,16 @@ interface CellState {
   opacity: number;
 }
 
+const MODELS = [
+  { id: "gemini", name: "Gemini 2.5 Pro" },
+  { id: "gpt4", name: "GPT-4o" },
+  { id: "claude", name: "Claude 3.5 Sonnet" },
+];
+
 export function HeroSection() {
   const [cellStates, setCellStates] = useState<Record<number, CellState>>({});
+  const [selectedModel, setSelectedModel] = useState(MODELS[0]);
+  const [isModelOpen, setIsModelOpen] = useState(false);
   const fadeTimeouts = useRef<Record<number, NodeJS.Timeout>>({});
 
   const handleMouseEnter = useCallback((index: number) => {
@@ -71,7 +80,7 @@ export function HeroSection() {
   };
 
   return (
-    <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden">
+    <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden pt-20">
       {/* Grid Background */}
       <div className="absolute inset-0 z-0">
         <div 
@@ -95,30 +104,69 @@ export function HeroSection() {
 
       {/* Content */}
       <div className="relative z-10 text-center max-w-5xl mx-auto pointer-events-none">
+
+        {/* Model Selector - The Extra Feature */}
+        <div className="fade-in-up-delay-0 mb-8 pointer-events-auto inline-block relative">
+          <div className="flex items-center gap-2 text-sm text-gray-400 mb-2 justify-center font-mono">
+            POWERED BY
+          </div>
+          <button
+            onClick={() => setIsModelOpen(!isModelOpen)}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white hover:border-orange-500 transition-colors font-mono min-w-[200px] justify-between"
+          >
+            <span>{selectedModel.name}</span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${isModelOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {isModelOpen && (
+            <div className="absolute top-full left-0 right-0 mt-2 bg-gray-900 border border-gray-700 rounded-lg overflow-hidden shadow-xl z-50">
+              {MODELS.map((model) => (
+                <button
+                  key={model.id}
+                  onClick={() => {
+                    setSelectedModel(model);
+                    setIsModelOpen(false);
+                  }}
+                  className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800 hover:text-white flex items-center justify-between font-mono"
+                >
+                  {model.name}
+                  {selectedModel.id === model.id && <Check className="w-3 h-3 text-orange-500" />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Main Headline */}
-        <h1 className="fade-in-up-delay-1 font-mono text-5xl md:text-7xl lg:text-8xl font-bold text-white mb-8 leading-tight tracking-tighter uppercase">
-          Your Junior Dev
+        <h1 className="fade-in-up-delay-1 font-mono text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-8 leading-tight tracking-tighter uppercase">
+          Jules does coding tasks
           <br />
-          <span className="inline-block border-2 border-orange-500 px-4 py-2 mt-4">
-            That Never Sleeps
-          </span>
+          <span className="text-gray-500">you don&apos;t want to do.</span>
         </h1>
 
         {/* Subheadline */}
-        <p className="fade-in-up-delay-2 text-lg md:text-xl lg:text-2xl text-gray-400 max-w-2xl mx-auto mb-12 font-mono">
-          An AI coding agent that works 24/7 on your GitHub issues.
-          <br />
-          From bug fixes to features – done in minutes, not days.
-        </p>
+        <div className="fade-in-up-delay-2 flex flex-wrap justify-center gap-3 max-w-3xl mx-auto mb-12 font-mono text-sm md:text-base">
+          {["Bug Fixing", "Version Bump", "Tests", "Fixing Jed's Code", "Feature Building"].map((tag, i) => (
+            <span key={i} className="px-3 py-1 border border-gray-700 rounded-full text-gray-300 bg-gray-900/50">
+              {tag}
+            </span>
+          ))}
+        </div>
 
         {/* CTA Button */}
-        <div className="fade-in-up-delay-3 flex justify-center items-center mb-16 pointer-events-auto">
+        <div className="fade-in-up-delay-3 flex flex-col items-center gap-8 pointer-events-auto">
           <a
             href="/login"
-            className="group inline-flex items-center gap-2 px-8 py-4 bg-white text-black font-mono text-base font-medium hover:bg-gray-100 transition-all duration-300 border border-white"
+            className="group inline-flex items-center gap-2 px-8 py-4 bg-white text-black font-mono text-base font-medium hover:bg-gray-100 transition-all duration-300 border border-white rounded-sm"
           >
-            START FOR FREE
+            TRY JULES
           </a>
+
+          <div className="max-w-md mx-auto text-center mt-8">
+            <p className="text-xl text-white font-mono leading-relaxed">
+              More time for the code you want to write, and everything else.
+            </p>
+          </div>
         </div>
       </div>
     </section>

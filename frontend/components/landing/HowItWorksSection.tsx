@@ -9,38 +9,58 @@ interface Step {
 
 const steps: Step[] = [
   {
-    number: "01",
-    title: "Tag @notsudo on any issue",
-    description: "Found a bug? Need a feature? Just comment @notsudo on any GitHub issue in your repository.",
+    number: "1",
+    title: "Select your GitHub repository and branch. Write a detailed prompt for Jules.",
+    description: "Use the \"jules\" label in an issue to assign a task directly in GitHub.",
     icon: (
-      <div className="w-16 h-16 border border-orange-500 rounded-sm flex items-center justify-center bg-orange-500/5">
-        <span className="text-orange-500 font-mono text-xs font-bold">@ns</span>
-      </div>
-    ),
-  },
-  {
-    number: "02",
-    title: "AI analyzes & codes",
-    description: "NotSudo reads the issue, understands your codebase, and writes the fix in an isolated sandbox.",
-    icon: (
-      <div className="w-16 h-16 border border-gray-600 rounded-sm flex items-center justify-center">
-        <div className="font-mono text-[10px] text-gray-400 leading-tight text-center">
-          <div className="text-orange-500">▶ run</div>
-          <div>████░░</div>
+      <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm p-4 font-mono text-xs text-gray-400 overflow-hidden relative">
+        <div className="absolute top-2 left-2 text-orange-500">@kathy/flipdisc main</div>
+        <div className="mt-6 text-gray-300">
+          Can you bump the version of next.js to v15 and convert the project to use app directory?
         </div>
       </div>
     ),
   },
   {
-    number: "03",
-    title: "Review & merge PR",
-    description: "Get a clean pull request with tests passing. Review it, request changes, or merge directly.",
+    number: "2",
+    title: "Jules fetches your repository, clones it to a Cloud VM, and develops a plan utilizing the latest model.",
+    description: "",
     icon: (
-      <div className="w-16 h-16 border border-gray-600 rounded-sm flex items-center justify-center relative">
-        <div className="w-10 h-8 border border-gray-500 rounded-sm flex items-center justify-center">
-          <span className="text-green-500 font-mono text-sm">✓</span>
+      <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm p-4 font-mono text-xs text-gray-400 overflow-hidden relative">
+        <div className="flex items-center gap-2 mb-2">
+          <div className="w-4 h-4 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 text-[8px]">J</div>
+          <span className="text-gray-500">Jules Avatar</span>
         </div>
-        <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full" />
+        <div className="text-gray-300">
+          Here is my plan: I plan to update the following files to the new app directory structure.
+        </div>
+        <div className="mt-2 text-green-500">Update 22 Files</div>
+      </div>
+    ),
+  },
+  {
+    number: "3",
+    title: "Jules provides a diff of the changes. Quickly browse and approve code edits.",
+    description: "",
+    icon: (
+      <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm p-4 font-mono text-xs overflow-hidden relative leading-relaxed">
+        <div className="text-gray-500">"dependencies": {"{"}</div>
+        <div className="text-red-500 bg-red-900/10">- "next": "10.2.3",</div>
+        <div className="text-green-500 bg-green-900/10">+ "next": "15.4.5",</div>
+        <div className="text-gray-300">"react": "19.1.1",</div>
+        <div className="text-gray-500">{"}"}</div>
+      </div>
+    ),
+  },
+  {
+    number: "4",
+    title: "Jules creates a PR of the changes. Approve the PR, merge it to your branch, and publish it on GitHub.",
+    description: "",
+    icon: (
+      <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm flex items-center justify-center">
+        <button className="bg-green-600 text-white px-4 py-2 text-xs font-mono rounded hover:bg-green-500">
+          Publish Branch
+        </button>
       </div>
     ),
   },
@@ -50,69 +70,36 @@ export function HowItWorksSection() {
   return (
     <section className="relative py-24 px-4 bg-black">
       <div className="max-w-6xl mx-auto">
-        {/* Section Header */}
-        <div className="text-center mb-16">
-          <span className="inline-block px-3 py-1 text-xs font-mono text-gray-400 border border-gray-700 mb-6">
-            [ HOW IT WORKS ]
-          </span>
-          <h2 className="font-mono text-3xl md:text-4xl lg:text-5xl font-bold text-white mb-4 leading-tight tracking-tight uppercase">
-            FROM ISSUE TO{" "}
-            <span className="inline-block border-2 border-orange-500 px-2 py-0.5">
-              PR
-            </span>
-            <br />
-            IN 3 STEPS
-          </h2>
-          <p className="text-gray-500 font-mono text-sm max-w-xl mx-auto mt-4">
-            No configuration required. Just install, tag, and ship.
-          </p>
-        </div>
-
         {/* Steps */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-gray-800">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
           {steps.map((step, index) => (
             <div
               key={index}
-              className="bg-black p-8 relative group hover:bg-gray-900/50 transition-colors"
+              className="flex flex-col gap-4"
             >
               {/* Step Number */}
-              <div className="absolute top-4 right-4">
-                <span className="font-mono text-4xl font-bold text-gray-800 group-hover:text-gray-700 transition-colors">
-                  {step.number}
-                </span>
-              </div>
-
-              {/* Icon */}
-              <div className="mb-6">
-                {step.icon}
+              <div className="w-8 h-8 rounded-full border border-gray-700 flex items-center justify-center text-gray-500 font-mono text-sm">
+                {step.number}
               </div>
 
               {/* Title */}
-              <h3 className="text-lg font-bold text-white mb-3 font-mono">
+              <h3 className="text-sm font-bold text-white font-mono leading-relaxed min-h-[80px]">
                 {step.title}
               </h3>
 
-              {/* Description */}
-              <p className="text-sm text-gray-500 leading-relaxed">
-                {step.description}
-              </p>
+              {/* Icon/Visual */}
+              <div className="mb-4">
+                {step.icon}
+              </div>
 
-              {/* Connector Line (except last) */}
-              {index < steps.length - 1 && (
-                <div className="hidden md:block absolute right-0 top-1/2 w-4 h-px bg-gray-700 translate-x-1/2 -translate-y-1/2" />
+              {/* Description */}
+              {step.description && (
+                <p className="text-xs text-gray-500 font-mono leading-relaxed">
+                  {step.description}
+                </p>
               )}
             </div>
           ))}
-        </div>
-
-        {/* Bottom CTA */}
-        <div className="text-center mt-12">
-          <a
-            href="/login"
-            className="inline-flex items-center gap-2 px-6 py-3 text-xs font-mono text-black bg-white hover:bg-gray-100 transition-all duration-200 border border-white"
-          >
-            TRY IT NOW — IT&apos;S FREE
-          </a>
         </div>
       </div>
     </section>
