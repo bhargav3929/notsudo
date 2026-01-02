@@ -1,12 +1,20 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // Types for our retro game entities
 interface Point {
   x: number;
   y: number;
 }
+
+const MODELS = [
+  { id: "opus", name: "Opus 4.5", badge: "NEW" },
+  { id: "gemini", name: "Gemini 3" },
+  { id: "codex", name: "Codex 5" },
+  { id: "gpt4", name: "GPT-4o" },
+  { id: "claude", name: "Claude 3.5 Sonnet" },
+];
 
 interface Bug {
   id: number;
@@ -247,6 +255,8 @@ const RetroBackground = () => {
 };
 
 export function HeroSection() {
+  const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
+
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden">
       {/* Retro Gaming Background */}
@@ -254,30 +264,64 @@ export function HeroSection() {
 
       {/* Content */}
       <div className="relative z-10 text-center max-w-5xl mx-auto pointer-events-none">
+
+        {/* Model Selector - Nice Good UI Way */}
+        <div className="fade-in-up-delay-0 mb-12 pointer-events-auto">
+          <div className="flex flex-wrap justify-center items-center gap-3">
+            {MODELS.map((model) => (
+              <button
+                key={model.id}
+                onClick={() => setSelectedModel(model.id)}
+                className={`relative group px-6 py-3 rounded-xl border transition-all duration-300 font-mono text-sm ${
+                  selectedModel === model.id
+                    ? "bg-white/10 border-orange-500 text-white shadow-[0_0_20px_rgba(249,115,22,0.3)]"
+                    : "bg-black/50 border-white/10 text-gray-400 hover:border-white/30 hover:text-gray-200"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${selectedModel === model.id ? 'bg-orange-500 animate-pulse' : 'bg-gray-600'}`} />
+                  {model.name}
+                  {model.badge && (
+                    <span className="absolute -top-2 -right-2 bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-bold">
+                      {model.badge}
+                    </span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Main Headline */}
-        <h1 className="fade-in-up-delay-1 font-mono text-5xl md:text-7xl lg:text-8xl font-bold text-white mb-8 leading-tight tracking-tighter uppercase">
-          Your Junior Dev
+        <h1 className="fade-in-up-delay-1 font-mono text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-8 leading-tight tracking-tighter uppercase">
+          It&apos;s Fast. It&apos;s Simple.
           <br />
-          <span className="inline-block border-2 border-orange-500 px-4 py-2 mt-4">
-            That Never Sleeps
-          </span>
+          It&apos;s bug free. It&apos;s NotSudo.
         </h1>
 
         {/* Subheadline */}
-        <p className="fade-in-up-delay-2 text-lg md:text-xl lg:text-2xl text-gray-400 max-w-2xl mx-auto mb-12 font-mono">
-          An AI coding agent that works 24/7 on your GitHub issues.
-          <br />
-          From bug fixes to features – done in minutes, not days.
-        </p>
+        <div className="fade-in-up-delay-2 flex flex-wrap justify-center gap-3 max-w-3xl mx-auto mb-12 font-mono text-sm md:text-base">
+          {["Bug Fixing", "Version Bump", "Tests", "Fixing Jed's Code", "Feature Building"].map((tag, i) => (
+            <span key={i} className="px-3 py-1 border border-gray-700 rounded-full text-gray-300 bg-gray-900/50">
+              {tag}
+            </span>
+          ))}
+        </div>
 
         {/* CTA Button */}
-        <div className="fade-in-up-delay-3 flex justify-center items-center mb-16 pointer-events-auto">
+        <div className="fade-in-up-delay-3 flex flex-col items-center gap-8 pointer-events-auto">
           <a
             href="/login"
-            className="group inline-flex items-center gap-2 px-8 py-4 bg-white text-black font-mono text-base font-medium hover:bg-gray-100 transition-all duration-300 border border-white"
+            className="group inline-flex items-center gap-2 px-8 py-4 bg-white text-black font-mono text-base font-medium hover:bg-gray-100 transition-all duration-300 border border-white rounded-sm"
           >
-            START FOR FREE
+            TRY NOTSUDO
           </a>
+
+          <div className="max-w-md mx-auto text-center mt-8">
+            <p className="text-xl text-white font-mono leading-relaxed">
+              More time for the code you want to write, and everything else.
+            </p>
+          </div>
         </div>
       </div>
     </section>
