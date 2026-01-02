@@ -1,299 +1,300 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
+import { PixelButton } from "@/components/ui/PixelButton";
+import { WaitlistModal } from "@/components/ui/WaitlistModal";
 
-// Grid configuration
-const GRID_COLS = 20;
-const GRID_ROWS = 12;
-const FPS = 10;
 
-interface CellState {
-  opacity: number;
-  type?: 'bug' | 'rocket' | 'explosion';
-}
 
-interface Entity {
-  id: number;
+// Types for our retro game entities
+interface Point {
   x: number;
   y: number;
 }
 
-interface Rocket extends Entity {
-  targetId: number;
+interface Bug {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  spawnTime: number;
 }
 
-const MODELS = [
-  { id: "opus", name: "Opus 4.5", badge: "NEW" },
-  { id: "gemini", name: "Gemini 3" },
-  { id: "codex", name: "Codex 5" },
-  { id: "gpt4", name: "GPT-4o" },
-  { id: "claude", name: "Claude 3.5 Sonnet" },
-];
+interface Rocket {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+}
 
-export function HeroSection() {
-  const [cellStates, setCellStates] = useState<Record<number, CellState>>({});
-  const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
-  const fadeTimeouts = useRef<Record<number, NodeJS.Timeout>>({});
+interface Particle extends Point {
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
+  size: number;
+}
 
-  // Game State Refs (Better performance than state for high-frequency updates)
-  const gameState = useRef({ bugs: [] as Entity[], rockets: [] as Rocket[] });
-  const nextId = useRef(0);
-  const [, setTick] = useState(0); // Force re-render
+const RetroBackground = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Safe zone for text (approximate grid coordinates)
-  // Rows 2-9, Cols 1-18
-  const isSafeZone = (x: number, y: number) => {
-    return y >= 2 && y <= 9 && x >= 1 && x <= 18;
-  };
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  const handleMouseEnter = useCallback((index: number) => {
-    if (fadeTimeouts.current[index]) {
-      clearTimeout(fadeTimeouts.current[index]);
-    }
-    setCellStates(prev => ({ ...prev, [index]: { opacity: 1 } }));
-  }, []);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-  const handleMouseLeave = useCallback((index: number) => {
-    const fadeSteps = [0.8, 0.6, 0.4, 0.2, 0];
-    let stepIndex = 0;
-    const fadeStep = () => {
-      setCellStates(prev => ({
-        ...prev,
-        [index]: { ...prev[index], opacity: fadeSteps[stepIndex] }
-      }));
-      stepIndex++;
-      if (stepIndex < fadeSteps.length) {
-        fadeTimeouts.current[index] = setTimeout(fadeStep, 150);
+    let animationFrameId: number;
+    let bugs: Bug[] = [];
+    let rockets: Rocket[] = [];
+    let particles: Particle[] = [];
+    let lastRocketTime = 0;
+    let nextId = 0;
+
+    const resize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+
+    window.addEventListener("resize", resize);
+    resize();
+
+    // Bug visual pattern (5x5 invader style)
+    const bugPattern = [
+      [1, 0, 1, 0, 1],
+      [0, 1, 1, 1, 0],
+      [1, 1, 0, 1, 1],
+      [1, 0, 1, 0, 1],
+      [1, 0, 0, 0, 1]
+    ];
+
+    // Rocket visual pattern
+    const rocketPattern = [
+      [0, 1, 0],
+      [1, 1, 1],
+      [0, 1, 0],
+      [0, 1, 0]
+    ];
+
+    const drawPixelArt = (ctx: CanvasRenderingContext2D, cx: number, cy: number, color: string, pattern: number[][], scale: number) => {
+      ctx.fillStyle = color;
+      const rows = pattern.length;
+      const cols = pattern[0].length;
+      const width = cols * scale;
+      const height = rows * scale;
+      const startX = cx - width / 2;
+      const startY = cy - height / 2;
+
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (pattern[r][c]) {
+            ctx.fillRect(startX + c * scale, startY + r * scale, scale, scale);
+          }
+        }
+      }
+    };
+
+    const spawnBug = () => {
+      const margin = 50;
+      let x = 0, y = 0;
+      let safe = false;
+      let attempts = 0;
+      
+      const excludeWidth = 900;
+      const excludeHeight = 500;
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+
+      while (!safe && attempts < 50) {
+        x = margin + Math.random() * (canvas.width - 2 * margin);
+        y = margin + Math.random() * (canvas.height - 2 * margin);
+        
+        const inExcludedZone = 
+          x > centerX - excludeWidth / 2 && 
+          x < centerX + excludeWidth / 2 && 
+          y > centerY - excludeHeight / 2 && 
+          y < centerY + excludeHeight / 2;
+
+        if (!inExcludedZone) {
+          safe = true;
+        }
+        attempts++;
+      }
+
+      bugs.push({
+        id: nextId++,
+        x,
+        y,
+        width: 40,
+        height: 40,
+        spawnTime: Date.now(),
+      });
+    };
+
+    const spawnRocket = () => {
+      if (bugs.length === 0) return;
+      const target = bugs[Math.floor(Math.random() * bugs.length)];
+      
+      let startX, startY;
+      if (Math.random() < 0.5) {
+        startX = Math.random() < 0.5 ? -20 : canvas.width + 20;
+        startY = Math.random() * canvas.height;
       } else {
-        setCellStates(prev => {
-          const newState = { ...prev };
-          delete newState[index];
-          return newState;
+        startX = Math.random() * canvas.width;
+        startY = Math.random() < 0.5 ? -20 : canvas.height + 20;
+      }
+
+      const speed = 8;
+      const dx = target.x - startX;
+      const dy = target.y - startY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      rockets.push({
+        id: nextId++,
+        x: startX,
+        y: startY,
+        vx: (dx / dist) * speed,
+        vy: (dy / dist) * speed,
+      });
+    };
+
+    const explode = (x: number, y: number) => {
+      for (let i = 0; i < 15; i++) {
+        particles.push({
+          x,
+          y,
+          vx: (Math.random() - 0.5) * 12,
+          vy: (Math.random() - 0.5) * 12,
+          life: 1.0,
+          color: Math.random() > 0.5 ? '#f97316' : '#ef4444',
+          size: Math.random() * 6 + 4,
         });
       }
     };
-    fadeTimeouts.current[index] = setTimeout(fadeStep, 100);
-  }, []);
 
-  useEffect(() => {
+    const loop = (time: number) => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (bugs.length < 3) {
+        if (Math.random() < 0.05) {
+            spawnBug();
+        }
+      }
+
+      if (time - lastRocketTime > 1200 && bugs.length > 0) {
+        spawnRocket();
+        lastRocketTime = time;
+      }
+
+      bugs.forEach(bug => {
+        bug.x += (Math.random() - 0.5) * 0.8;
+        bug.y += (Math.random() - 0.5) * 0.8;
+
+        ctx.strokeStyle = '#22c55e';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bug.x - 25, bug.y - 25, 50, 50);
+
+        drawPixelArt(ctx, bug.x, bug.y, '#22c55e', bugPattern, 6);
+      });
+
+      for (let i = rockets.length - 1; i >= 0; i--) {
+        const r = rockets[i];
+        r.x += r.vx;
+        r.y += r.vy;
+
+        drawPixelArt(ctx, r.x, r.y, '#f97316', rocketPattern, 4);
+
+        let hit = false;
+        for (let j = bugs.length - 1; j >= 0; j--) {
+          const b = bugs[j];
+          const dx = b.x - r.x;
+          const dy = b.y - r.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+
+          if (dist < 35) {
+            explode(b.x, b.y);
+            bugs.splice(j, 1);
+            hit = true;
+            break;
+          }
+        }
+
+        if (hit) {
+          rockets.splice(i, 1);
+        } else {
+          if (r.x < -50 || r.x > canvas.width + 50 || r.y < -50 || r.y > canvas.height + 50) {
+             rockets.splice(i, 1);
+          }
+        }
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.03;
+
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+        } else {
+          ctx.globalAlpha = p.life;
+          ctx.fillStyle = p.color;
+          ctx.fillRect(p.x, p.y, p.size, p.size);
+          ctx.globalAlpha = 1.0;
+        }
+      }
+
+      animationFrameId = requestAnimationFrame(loop);
+    };
+
+    animationFrameId = requestAnimationFrame(loop);
+
     return () => {
-      Object.values(fadeTimeouts.current).forEach(timeout => clearTimeout(timeout));
+      window.removeEventListener("resize", resize);
+      cancelAnimationFrame(animationFrameId);
     };
   }, []);
 
-  // Game Loop
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const state = gameState.current;
-      let { bugs, rockets } = state;
+  return <canvas ref={canvasRef} className="absolute inset-0 z-0 pointer-events-none opacity-60" />;
+};
 
-      // Spawn Bugs
-      if (Math.random() < 0.1 && bugs.length < 5) {
-        const edge = Math.floor(Math.random() * 4);
-        let x = 0, y = 0;
-        switch(edge) {
-          case 0: x = Math.floor(Math.random() * GRID_COLS); y = 0; break;
-          case 1: x = GRID_COLS - 1; y = Math.floor(Math.random() * GRID_ROWS); break;
-          case 2: x = Math.floor(Math.random() * GRID_COLS); y = GRID_ROWS - 1; break;
-          case 3: x = 0; y = Math.floor(Math.random() * GRID_ROWS); break;
-        }
-        if (!isSafeZone(x, y)) {
-          bugs.push({ id: nextId.current++, x, y });
-        }
-      }
-
-      // Move Bugs
-      bugs = bugs.map(bug => {
-        if (Math.random() > 0.7) return bug;
-        const moves = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
-        const move = moves[Math.floor(Math.random() * moves.length)];
-        const newX = bug.x + move.x;
-        const newY = bug.y + move.y;
-        if (newX >= 0 && newX < GRID_COLS && newY >= 0 && newY < GRID_ROWS && !isSafeZone(newX, newY)) {
-          return { ...bug, x: newX, y: newY };
-        }
-        return bug;
-      });
-
-      // Spawn Rockets
-      if (Math.random() < 0.15 && rockets.length < 3 && bugs.length > 0) {
-        rockets.push({
-             id: nextId.current++,
-             x: Math.floor(GRID_COLS / 2),
-             y: 2,
-             targetId: -1
-         });
-      }
-
-      // Move Rockets
-      rockets = rockets.map(rocket => {
-          let target = bugs.find(b => b.id === rocket.targetId);
-          if (!target) {
-             let minDist = Infinity;
-             for (const b of bugs) {
-                 const dist = Math.abs(b.x - rocket.x) + Math.abs(b.y - rocket.y);
-                 if (dist < minDist) {
-                     minDist = dist;
-                     target = b;
-                 }
-             }
-             if (target) rocket.targetId = target.id;
-          }
-
-          if (target) {
-            const dx = Math.sign(target.x - rocket.x);
-            const dy = Math.sign(target.y - rocket.y);
-            // Move 1 step towards target, prioritizing axis with larger gap
-            let moveX = 0, moveY = 0;
-             if (Math.abs(target.x - rocket.x) >= Math.abs(target.y - rocket.y)) {
-                moveX = dx;
-            } else {
-                moveY = dy;
-            }
-            return { ...rocket, x: rocket.x + moveX, y: rocket.y + moveY };
-          } else {
-              // Drift down if no target
-              return { ...rocket, y: rocket.y + 1 };
-          }
-      }).filter(r => r.x >= 0 && r.x < GRID_COLS && r.y >= 0 && r.y < GRID_ROWS);
-
-      // Collisions
-      const hitBugs = new Set<number>();
-      const hitRockets = new Set<number>();
-
-      rockets.forEach(r => {
-          bugs.forEach(b => {
-              if (r.x === b.x && r.y === b.y) {
-                  hitBugs.add(b.id);
-                  hitRockets.add(r.id);
-              }
-          });
-      });
-
-      // Apply collisions
-      if (hitBugs.size > 0 || hitRockets.size > 0) {
-         bugs = bugs.filter(b => !hitBugs.has(b.id));
-         rockets = rockets.filter(r => !hitRockets.has(r.id));
-      }
-
-      // Update Ref
-      gameState.current = { bugs, rockets };
-
-      // Trigger Render
-      setTick(t => t + 1);
-
-    }, 1000 / FPS);
-    return () => clearInterval(timer);
-  }, []);
-
-  const getCellStyle = (index: number) => {
-    const x = index % GRID_COLS;
-    const y = Math.floor(index / GRID_COLS);
-
-    // Check for entities
-    const isBug = gameState.current.bugs.some(b => b.x === x && b.y === y);
-    const isRocket = gameState.current.rockets.some(r => r.x === x && r.y === y);
-
-    if (isBug) {
-        return { backgroundColor: 'rgba(34, 197, 94, 0.8)' }; // Green
-    }
-    if (isRocket) {
-        return { backgroundColor: 'rgba(249, 115, 22, 1)' }; // Orange
-    }
-
-    const state = cellStates[index];
-    if (!state) return {};
-
-    return {
-      backgroundColor: `rgba(249, 115, 22, ${state.opacity * 0.5})`,
-    };
-  };
+export function HeroSection() {
+  const [isWaitlistOpen, setIsWaitlistOpen] = useState(false);
 
   return (
-    <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden pt-48 md:pt-20">
-      {/* Grid Background */}
-      <div className="absolute inset-0 z-0">
-        <div
-          className="w-full h-full grid"
-          style={{
-            gridTemplateColumns: `repeat(${GRID_COLS}, 1fr)`,
-            gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
-          }}
-        >
-          {Array.from({ length: GRID_COLS * GRID_ROWS }).map((_, index) => (
-            <div
-              key={index}
-              className="border border-white/10 transition-colors duration-300"
-              style={getCellStyle(index)}
-              onMouseEnter={() => handleMouseEnter(index)}
-              onMouseLeave={() => handleMouseLeave(index)}
-            />
-          ))}
-        </div>
-      </div>
+    <section className="relative min-h-screen flex flex-col items-center justify-center px-4 bg-black overflow-hidden retro-scanlines">
+      <RetroBackground />
 
-      {/* Content */}
       <div className="relative z-10 text-center max-w-5xl mx-auto pointer-events-none">
-
-        {/* Model Selector - Nice Good UI Way */}
-        <div className="fade-in-up-delay-0 mb-12 pointer-events-auto">
-          <div className="flex flex-wrap justify-center items-center gap-3">
-            {MODELS.map((model) => (
-              <button
-                key={model.id}
-                onClick={() => setSelectedModel(model.id)}
-                className={`relative group px-6 py-3 rounded-xl border transition-all duration-300 font-mono text-sm ${
-                  selectedModel === model.id
-                    ? "bg-white/10 border-orange-500 text-white shadow-[0_0_20px_rgba(249,115,22,0.3)]"
-                    : "bg-black/50 border-white/10 text-gray-400 hover:border-white/30 hover:text-gray-200"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full ${selectedModel === model.id ? 'bg-orange-500 animate-pulse' : 'bg-gray-600'}`} />
-                  {model.name}
-                  {model.badge && (
-                    <span className="absolute -top-2 -right-2 bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-bold">
-                      {model.badge}
-                    </span>
-                  )}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Main Headline */}
-        <h1 className="fade-in-up-delay-1 font-mono text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-8 leading-tight tracking-tighter uppercase">
-          It&apos;s Fast. It&apos;s Simple.
-          <br />
-          It&apos;s bug free. It&apos;s NotSudo.
+        <h1 className="fade-in-up-delay-1 font-retro-heading text-2xl md:text-4xl lg:text-5xl font-bold text-white mb-8 leading-loose tracking-wide uppercase">
+          Just Assign. We&apos;ll Ship.
         </h1>
 
-        {/* Subheadline */}
         <div className="fade-in-up-delay-2 flex flex-wrap justify-center gap-3 max-w-3xl mx-auto mb-12 font-mono text-sm md:text-base">
-          {["Bug Fixing", "Version Bump", "Tests", "Fixing Jed's Code", "Feature Building"].map((tag, i) => (
+          {["Works 24/7", "Multiple AI Models", "GitHub Native", "Enterprise Secure"].map((tag, i) => (
             <span key={i} className="px-3 py-1 border border-gray-700 rounded-full text-gray-300 bg-gray-900/50">
               {tag}
             </span>
           ))}
         </div>
 
-        {/* CTA Button */}
-        <div className="fade-in-up-delay-3 flex flex-col items-center gap-8 pointer-events-auto">
-          <a
-            href="/login"
-            className="group inline-flex items-center gap-2 px-8 py-4 bg-white text-black font-mono text-base font-medium hover:bg-gray-100 transition-all duration-300 border border-white rounded-sm"
-          >
-            TRY NOTSUDO
-          </a>
+        <div className="fade-in-up-delay-3 flex flex-col items-center gap-8 mb-16 pointer-events-auto">
+          <PixelButton onClick={() => setIsWaitlistOpen(true)} size="lg">
+            JOIN WAITLIST
+          </PixelButton>
 
           <div className="max-w-md mx-auto text-center mt-8">
             <p className="text-xl text-white font-mono leading-relaxed">
-              More time for the code you want to write, and everything else.
+              Your GitHub issues, resolved autonomously.
             </p>
           </div>
         </div>
       </div>
+
+      <WaitlistModal isOpen={isWaitlistOpen} onClose={() => setIsWaitlistOpen(false)} />
     </section>
   );
 }
