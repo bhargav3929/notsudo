@@ -5,12 +5,12 @@ interface PricingTier {
   name: string;
   features: string[];
   description: string;
-  image?: string; // Placeholder for images from the site
+  image?: string;
 }
 
 const pricingTiers: PricingTier[] = [
   {
-    tier: "Jules",
+    tier: "NotSudo",
     name: "Get started with real coding tasks.",
     features: [
       "15 tasks per day",
@@ -20,17 +20,17 @@ const pricingTiers: PricingTier[] = [
     description: "",
   },
   {
-    tier: "Jules in Pro",
+    tier: "NotSudo in Pro",
     name: "For devs who ship daily and want to stay in the flow.",
     features: [
-      "100 tasks per day, enough to run Jules throughout your coding day",
+      "100 tasks per day, enough to run NotSudo throughout your coding day",
       "15 concurrent tasks, so you can run multiple threads in parallel",
       "Higher access to the latest models, starting with Gemini 3 Pro",
     ],
     description: "",
   },
   {
-    tier: "Jules in Ultra",
+    tier: "NotSudo in Ultra",
     name: "For builders who run agents at scale.",
     features: [
       "300 tasks per day to handle the most demanding development cycles",
@@ -48,13 +48,13 @@ export function PricingSection() {
         {/* Section Header */}
         <div className="text-center mb-16">
           <h2 className="font-mono text-3xl md:text-5xl font-bold text-white mb-6 tracking-tight">
-            Find the Jules plan that
+            Find the NotSudo plan that
             <br />
             fits your workflow
           </h2>
 
           <p className="text-gray-400 max-w-2xl mx-auto font-mono text-sm leading-relaxed">
-            Jules scales with how you build, from quick fixes to fully async,
+            NotSudo scales with how you build, from quick fixes to fully async,
             multi-agent development. Choose the plan that gives you the speed,
             throughput, and model access you need.
           </p>
@@ -90,7 +90,7 @@ export function PricingSection() {
                 ))}
               </ul>
 
-              {/* Visual Placeholder ( mimicking the images in the original ) */}
+              {/* Visual Placeholder */}
               <div className="w-full h-32 bg-gray-900 rounded border border-gray-800 flex items-center justify-center opacity-50">
                 <span className="text-gray-700 font-mono text-xs">Plan Visual</span>
               </div>

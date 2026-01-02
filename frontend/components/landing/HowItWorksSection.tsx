@@ -10,8 +10,8 @@ interface Step {
 const steps: Step[] = [
   {
     number: "1",
-    title: "Select your GitHub repository and branch. Write a detailed prompt for Jules.",
-    description: "Use the \"jules\" label in an issue to assign a task directly in GitHub.",
+    title: "Select your GitHub repository and branch. Write a detailed prompt for NotSudo.",
+    description: "Use the \"notsudo\" label in an issue to assign a task directly in GitHub.",
     icon: (
       <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm p-4 font-mono text-xs text-gray-400 overflow-hidden relative">
         <div className="absolute top-2 left-2 text-orange-500">@kathy/flipdisc main</div>
@@ -23,13 +23,13 @@ const steps: Step[] = [
   },
   {
     number: "2",
-    title: "Jules fetches your repository, clones it to a Cloud VM, and develops a plan utilizing the latest model.",
+    title: "NotSudo fetches your repository, clones it to a Cloud VM, and develops a plan utilizing the latest model.",
     description: "",
     icon: (
       <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm p-4 font-mono text-xs text-gray-400 overflow-hidden relative">
         <div className="flex items-center gap-2 mb-2">
-          <div className="w-4 h-4 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 text-[8px]">J</div>
-          <span className="text-gray-500">Jules Avatar</span>
+          <div className="w-4 h-4 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-500 text-[8px]">N</div>
+          <span className="text-gray-500">NotSudo Avatar</span>
         </div>
         <div className="text-gray-300">
           Here is my plan: I plan to update the following files to the new app directory structure.
@@ -40,7 +40,7 @@ const steps: Step[] = [
   },
   {
     number: "3",
-    title: "Jules provides a diff of the changes. Quickly browse and approve code edits.",
+    title: "NotSudo provides a diff of the changes. Quickly browse and approve code edits.",
     description: "",
     icon: (
       <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm p-4 font-mono text-xs overflow-hidden relative leading-relaxed">
@@ -54,7 +54,7 @@ const steps: Step[] = [
   },
   {
     number: "4",
-    title: "Jules creates a PR of the changes. Approve the PR, merge it to your branch, and publish it on GitHub.",
+    title: "NotSudo creates a PR of the changes. Approve the PR, merge it to your branch, and publish it on GitHub.",
     description: "",
     icon: (
       <div className="w-full h-32 bg-gray-900 border border-gray-700 rounded-sm flex items-center justify-center">

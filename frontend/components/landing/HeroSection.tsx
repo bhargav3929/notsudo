@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { ChevronDown, Check } from "lucide-react";
 
 // Grid configuration
 const GRID_COLS = 20;
@@ -12,15 +11,16 @@ interface CellState {
 }
 
 const MODELS = [
-  { id: "gemini", name: "Gemini 2.5 Pro" },
+  { id: "opus", name: "Opus 4.5", badge: "NEW" },
+  { id: "gemini", name: "Gemini 3" },
+  { id: "codex", name: "Codex 5" },
   { id: "gpt4", name: "GPT-4o" },
   { id: "claude", name: "Claude 3.5 Sonnet" },
 ];
 
 export function HeroSection() {
   const [cellStates, setCellStates] = useState<Record<number, CellState>>({});
-  const [selectedModel, setSelectedModel] = useState(MODELS[0]);
-  const [isModelOpen, setIsModelOpen] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(MODELS[0].id);
   const fadeTimeouts = useRef<Record<number, NodeJS.Timeout>>({});
 
   const handleMouseEnter = useCallback((index: number) => {
@@ -105,43 +105,38 @@ export function HeroSection() {
       {/* Content */}
       <div className="relative z-10 text-center max-w-5xl mx-auto pointer-events-none">
 
-        {/* Model Selector - The Extra Feature */}
-        <div className="fade-in-up-delay-0 mb-8 pointer-events-auto inline-block relative">
-          <div className="flex items-center gap-2 text-sm text-gray-400 mb-2 justify-center font-mono">
-            POWERED BY
-          </div>
-          <button
-            onClick={() => setIsModelOpen(!isModelOpen)}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white hover:border-orange-500 transition-colors font-mono min-w-[200px] justify-between"
-          >
-            <span>{selectedModel.name}</span>
-            <ChevronDown className={`w-4 h-4 transition-transform ${isModelOpen ? 'rotate-180' : ''}`} />
-          </button>
-
-          {isModelOpen && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-gray-900 border border-gray-700 rounded-lg overflow-hidden shadow-xl z-50">
-              {MODELS.map((model) => (
-                <button
-                  key={model.id}
-                  onClick={() => {
-                    setSelectedModel(model);
-                    setIsModelOpen(false);
-                  }}
-                  className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-gray-800 hover:text-white flex items-center justify-between font-mono"
-                >
+        {/* Model Selector - Nice Good UI Way */}
+        <div className="fade-in-up-delay-0 mb-12 pointer-events-auto">
+          <div className="flex flex-wrap justify-center items-center gap-3">
+            {MODELS.map((model) => (
+              <button
+                key={model.id}
+                onClick={() => setSelectedModel(model.id)}
+                className={`relative group px-6 py-3 rounded-xl border transition-all duration-300 font-mono text-sm ${
+                  selectedModel === model.id
+                    ? "bg-white/10 border-orange-500 text-white shadow-[0_0_20px_rgba(249,115,22,0.3)]"
+                    : "bg-black/50 border-white/10 text-gray-400 hover:border-white/30 hover:text-gray-200"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${selectedModel === model.id ? 'bg-orange-500 animate-pulse' : 'bg-gray-600'}`} />
                   {model.name}
-                  {selectedModel.id === model.id && <Check className="w-3 h-3 text-orange-500" />}
-                </button>
-              ))}
-            </div>
-          )}
+                  {model.badge && (
+                    <span className="absolute -top-2 -right-2 bg-orange-500 text-black text-[10px] px-1.5 py-0.5 rounded font-bold">
+                      {model.badge}
+                    </span>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Main Headline */}
         <h1 className="fade-in-up-delay-1 font-mono text-4xl md:text-6xl lg:text-7xl font-bold text-white mb-8 leading-tight tracking-tighter uppercase">
-          Jules does coding tasks
+          It&apos;s Fast. It&apos;s Simple.
           <br />
-          <span className="text-gray-500">you don&apos;t want to do.</span>
+          It&apos;s bug free. It&apos;s NotSudo.
         </h1>
 
         {/* Subheadline */}
@@ -159,7 +154,7 @@ export function HeroSection() {
             href="/login"
             className="group inline-flex items-center gap-2 px-8 py-4 bg-white text-black font-mono text-base font-medium hover:bg-gray-100 transition-all duration-300 border border-white rounded-sm"
           >
-            TRY JULES
+            TRY NOTSUDO
           </a>
 
           <div className="max-w-md mx-auto text-center mt-8">

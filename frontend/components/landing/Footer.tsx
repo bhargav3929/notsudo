@@ -10,7 +10,7 @@ export function Footer() {
         </div>
 
         <div className="text-sm text-gray-600 font-mono">
-          © {new Date().getFullYear()} Jules Clone
+          © {new Date().getFullYear()} NotSudo
         </div>
       </div>
     </footer>

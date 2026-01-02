@@ -28,7 +28,7 @@ export function Navbar() {
           <div className="flex items-center justify-between h-20">
             {/* Logo */}
             <a href="/" className="text-xl font-bold text-white font-mono tracking-tighter">
-              Jules
+              NotSudo
             </a>
 
             {/* Desktop Navigation */}
@@ -43,7 +43,7 @@ export function Navbar() {
                 href="/login"
                 className="text-sm font-mono text-white hover:text-gray-300 transition-colors"
               >
-                Try Jules
+                Try NotSudo
               </a>
             </div>
 
@@ -83,7 +83,7 @@ export function Navbar() {
             href="/login"
             className="text-xl font-mono text-white hover:text-gray-300 transition-colors"
           >
-            Try Jules
+            Try NotSudo
           </a>
         </div>
       </div>
