@@ -15,6 +15,10 @@ const nextConfig = {
   },
   async rewrites() {
     return [
+        {
+          source: '/api/auth/:path*',
+          destination: '/api/auth/:path*',
+        },
       {
         // Proxy all API routes to Flask backend EXCEPT auth routes
         // Auth routes are handled by Better Auth in Next.js
@@ -34,6 +38,10 @@ const nextConfig = {
         destination: 'http://localhost:8000/api/$1',
       },
     ]
+  },
+  webpack: (config) => {
+    config.externals.push("better-sqlite3");
+    return config;
   },
 }
 
