@@ -1,12 +1,94 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Sidebar } from "@/components/dashboard/Sidebar";
-import { Github, Check, AlertCircle, LogOut } from "lucide-react";
+import { Github, Check, AlertCircle, LogOut, Bot, Save, Loader2 } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+interface AIModel {
+  id: string;
+  name: string;
+  provider: string;
+}
 
 export default function SettingsPage() {
   const { data: session } = authClient.useSession();
   const isConnected = !!session;
+
+  // AI Settings state
+  const [models, setModels] = useState<AIModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [customRules, setCustomRules] = useState<string>("");
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Fetch available models
+  useEffect(() => {
+    const fetchModels = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/models`);
+        if (res.ok) {
+          const data = await res.json();
+          setModels(data.models || []);
+          if (!selectedModel && data.default) {
+            setSelectedModel(data.default);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch models:", error);
+      }
+    };
+    fetchModels();
+  }, []);
+
+  // Fetch user's AI settings
+  useEffect(() => {
+    const fetchSettings = async () => {
+      if (!session?.user?.id) return;
+      setLoadingSettings(true);
+      try {
+        const res = await fetch(`${API_URL}/api/user/ai-settings?user_id=${session.user.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.selectedModel) setSelectedModel(data.selectedModel);
+          if (data.customRules) setCustomRules(data.customRules);
+        }
+      } catch (error) {
+        console.error("Failed to fetch AI settings:", error);
+      } finally {
+        setLoadingSettings(false);
+      }
+    };
+    fetchSettings();
+  }, [session?.user?.id]);
+
+  const handleSaveSettings = async () => {
+    if (!session?.user?.id) return;
+    setSavingSettings(true);
+    setSaveSuccess(false);
+    try {
+      const res = await fetch(`${API_URL}/api/user/ai-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: session.user.id,
+          selectedModel,
+          customRules,
+        }),
+      });
+      if (res.ok) {
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 3000);
+      }
+    } catch (error) {
+      console.error("Failed to save AI settings:", error);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
 
   const handleConnectGithub = async () => {
     await authClient.signIn.social({
@@ -30,8 +112,8 @@ export default function SettingsPage() {
           <h1 className="font-mono text-xl font-bold text-white">Settings</h1>
         </header>
 
-        <div className="p-8">
-          <div className="max-w-2xl">
+        <div className="p-8 space-y-6">
+          <div className="max-w-2xl space-y-6">
             {/* GitHub Connection */}
             <div className="border border-white/10 rounded-lg overflow-hidden">
               <div className="px-6 py-4 border-b border-white/10">
@@ -99,6 +181,89 @@ export default function SettingsPage() {
                       Connect to GitHub
                     </button>
                   </div>
+                )}
+              </div>
+            </div>
+
+            {/* AI Settings */}
+            <div className="border border-white/10 rounded-lg overflow-hidden">
+              <div className="px-6 py-4 border-b border-white/10">
+                <div className="flex items-center gap-2">
+                  <Bot className="w-5 h-5 text-amber-500" />
+                  <h2 className="font-mono text-white font-medium">AI Settings</h2>
+                </div>
+                <p className="font-mono text-xs text-gray-500 mt-1">
+                  Configure which AI model to use and add custom rules for code generation
+                </p>
+              </div>
+              <div className="p-6 space-y-6">
+                {loadingSettings ? (
+                  <div className="flex items-center gap-2 text-gray-500">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="font-mono text-sm">Loading settings...</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* Model Selection */}
+                    <div className="space-y-2">
+                      <label className="font-mono text-xs text-gray-400 uppercase tracking-wider">
+                        AI Model
+                      </label>
+                      <select
+                        value={selectedModel}
+                        onChange={(e) => setSelectedModel(e.target.value)}
+                        className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 font-mono text-sm text-white focus:outline-none focus:border-amber-500/50 transition-colors"
+                      >
+                        {models.map((model) => (
+                          <option key={model.id} value={model.id} className="bg-black">
+                            {model.name} ({model.provider})
+                          </option>
+                        ))}
+                      </select>
+                      <p className="font-mono text-xs text-gray-500">
+                        Select the AI model to use for code analysis and generation
+                      </p>
+                    </div>
+
+                    {/* Custom Rules */}
+                    <div className="space-y-2">
+                      <label className="font-mono text-xs text-gray-400 uppercase tracking-wider">
+                        Custom Rules
+                      </label>
+                      <textarea
+                        value={customRules}
+                        onChange={(e) => setCustomRules(e.target.value)}
+                        placeholder="Add custom instructions for the AI, e.g.:&#10;- Always use TypeScript&#10;- Follow eslint rules&#10;- Add JSDoc comments"
+                        rows={5}
+                        className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 font-mono text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500/50 transition-colors resize-none"
+                      />
+                      <p className="font-mono text-xs text-gray-500">
+                        These rules will be included in every AI prompt for code generation
+                      </p>
+                    </div>
+
+                    {/* Save Button */}
+                    <div className="flex items-center gap-4">
+                      <button
+                        onClick={handleSaveSettings}
+                        disabled={savingSettings}
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 text-black font-mono text-sm font-medium hover:bg-amber-400 transition-colors rounded-lg disabled:opacity-50"
+                      >
+                        {savingSettings ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Save className="w-4 h-4" />
+                        )}
+                        {savingSettings ? "Saving..." : "Save Settings"}
+                      </button>
+                      {saveSuccess && (
+                        <span className="font-mono text-xs text-green-400 flex items-center gap-1">
+                          <Check className="w-4 h-4" />
+                          Settings saved!
+                        </span>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             </div>

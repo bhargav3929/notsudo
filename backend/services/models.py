@@ -34,6 +34,8 @@ class User(Base):
     image = Column(String, nullable=True)
     createdAt = Column(DateTime, default=datetime.utcnow, nullable=False)
     updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    selectedModel = Column(String, nullable=True, default='anthropic/claude-sonnet-4')
+    customRules = Column(Text, nullable=True)
     
     # Relationships
     repositories = relationship("Repository", back_populates="user")
@@ -116,6 +118,31 @@ class Repository(Base):
     __table_args__ = (
         Index('repository_user_id_idx', 'user_id'),
         Index('repository_full_name_idx', 'full_name'),
+    )
+
+
+class GitHubAppInstallation(Base):
+    """GitHub App Installation - tracks app installations per user/org."""
+    __tablename__ = 'github_app_installation'
+    
+    id = Column(String, primary_key=True)  # Installation ID from GitHub
+    user_id = Column(String, ForeignKey('user.id', ondelete='CASCADE'), nullable=True)
+    account_login = Column(String, nullable=False)  # GitHub username or org name
+    account_type = Column(String, nullable=False)  # 'User' or 'Organization'
+    account_id = Column(Integer, nullable=False)  # GitHub account ID
+    target_type = Column(String, nullable=True)  # 'User' or 'Organization'
+    repository_selection = Column(String, default='all')  # 'all' or 'selected'
+    suspended_at = Column(DateTime, nullable=True)
+    access_tokens_url = Column(String, nullable=True)
+    repositories_url = Column(String, nullable=True)
+    html_url = Column(String, nullable=True)
+    app_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        Index('installation_user_id_idx', 'user_id'),
+        Index('installation_account_login_idx', 'account_login'),
     )
 
 

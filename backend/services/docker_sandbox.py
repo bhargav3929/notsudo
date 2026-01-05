@@ -40,7 +40,7 @@ class ExecResult:
 @dataclass
 class SandboxConfig:
     """Configuration for sandbox container resource limits."""
-    memory_limit: str = "512m"
+    memory_limit: str = "1g"
     cpu_period: int = 100000
     cpu_quota: int = 50000  # 50% of one CPU
     network_disabled: bool = True
@@ -126,10 +126,17 @@ class DockerSandboxService:
         self, 
         image: str, 
         repo_path: str,
-        working_dir: str = "/workspace"
+        working_dir: str = "/workspace",
+        network_enabled: bool = True  # Enable network by default for install
     ) -> Container:
         """
         Create a container with the repo mounted and security limits applied.
+        
+        Args:
+            image: Docker image to use
+            repo_path: Path to the repository to mount
+            working_dir: Working directory inside the container
+            network_enabled: Whether to enable network access (needed for installs)
         """
         container = self.client.containers.create(
             image=image,
@@ -141,7 +148,7 @@ class DockerSandboxService:
             mem_limit=self.config.memory_limit,
             cpu_period=self.config.cpu_period,
             cpu_quota=self.config.cpu_quota,
-            network_disabled=self.config.network_disabled,
+            network_disabled=not network_enabled,  # Invert: network_enabled=True means network_disabled=False
             detach=True,
         )
         

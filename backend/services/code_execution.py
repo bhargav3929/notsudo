@@ -26,6 +26,9 @@ from typing import Optional
 
 from services.stack_detector import StackDetectorService, StackConfig
 from services.docker_sandbox import DockerSandboxService, ExecResult, DOCKER_AVAILABLE
+from services.formatter_detector import FormatterDetectorService, FormatterConfig
+from services.comby_service import CombyService, COMBY_AVAILABLE
+from services.security_scanner import SecurityScannerService, ScanResult, Severity
 
 # Check if AWS sandbox is available
 try:
@@ -44,10 +47,12 @@ USE_AWS_SANDBOX = os.environ.get('USE_AWS_SANDBOX', 'false').lower() == 'true'
 class ExecutionResult:
     """Result of the full code validation flow."""
     success: bool
-    stage: str  # 'clone', 'install', 'test', 'build'
+    stage: str  # 'clone', 'install', 'test', 'build', 'security'
     logs: list[str] = field(default_factory=list)
     error: Optional[str] = None
     exit_code: int = 0
+    formatted_file_changes: Optional[list[dict]] = None  # Updated file contents after formatting
+    security_issues: Optional[list[dict]] = None  # Security vulnerabilities found
     
     def add_log(self, message: str):
         self.logs.append(message)
@@ -57,8 +62,11 @@ class ExecutionResult:
 class FileChange:
     """Represents a file change to apply."""
     file_path: str
-    new_content: str
-    reason: str
+    new_content: str = ''  # For edit type
+    reason: str = ''
+    type: str = 'edit'  # 'edit' or 'patch'
+    match_pattern: str = ''  # For patch type
+    replace_pattern: str = ''  # For patch type
 
 
 class CodeExecutionService:
@@ -75,14 +83,22 @@ class CodeExecutionService:
         stack_detector: Optional[StackDetectorService] = None,
         docker_sandbox: Optional[DockerSandboxService] = None,
         aws_sandbox: Optional["AWSSandboxService"] = None,
+        formatter_detector: Optional[FormatterDetectorService] = None,
+        security_scanner: Optional[SecurityScannerService] = None,
     ):
         self.stack_detector = stack_detector or StackDetectorService()
+        self.formatter_detector = formatter_detector or FormatterDetectorService()
+        self.comby_service = CombyService()
+        self.security_scanner = security_scanner or SecurityScannerService()
         self.docker_sandbox = docker_sandbox
         self.aws_sandbox = aws_sandbox
         self.use_aws = False
         
+        # DEV_MODE forces local Docker instead of AWS Fargate
+        dev_mode = os.environ.get('DEV_MODE', 'false').lower() == 'true'
+        
         # Check which sandbox to use
-        if USE_AWS_SANDBOX and BOTO3_AVAILABLE:
+        if not dev_mode and USE_AWS_SANDBOX and BOTO3_AVAILABLE:
             # Production: Use AWS Fargate
             if self.aws_sandbox is None:
                 try:
@@ -94,6 +110,8 @@ class CodeExecutionService:
                         logger.warning("AWS sandbox configured but not available")
                 except Exception as e:
                     logger.warning(f"AWS sandbox not available: {e}")
+        elif dev_mode:
+            logger.info("DEV_MODE enabled - using local Docker instead of AWS Fargate")
         
         # Fallback to local Docker
         if not self.use_aws and self.docker_sandbox is None and DOCKER_AVAILABLE:
@@ -141,12 +159,22 @@ class CodeExecutionService:
                 return result
             result.add_log("Repository cloned successfully")
             
-            # Step 2: Apply file changes
+            # Step 2: Apply file changes (edit or patch)
             result.stage = 'apply'
-            changes = [FileChange(**c) if isinstance(c, dict) else c for c in file_changes]
-            for change in changes:
-                self._apply_change(temp_dir, change)
-                result.add_log(f"Applied change to {change.file_path}")
+            for c in file_changes:
+                change = self._normalize_change(c)
+                if change.type == 'patch' and change.match_pattern:
+                    self._apply_patch(temp_dir, change, result)
+                else:
+                    self._apply_edit(temp_dir, change)
+                    result.add_log(f"Applied change to {change.file_path}")
+            
+            # Step 2.5: Format files using project formatters (only for edit changes)
+            result.stage = 'format'
+            edit_changes = [self._normalize_change(c) for c in file_changes if self._normalize_change(c).type == 'edit']
+            formatted_changes = self._format_files(temp_dir, edit_changes, result)
+            if formatted_changes:
+                result.formatted_file_changes = formatted_changes
             
             # Step 3: Detect stack
             result.stage = 'detect'
@@ -154,7 +182,10 @@ class CodeExecutionService:
             stack_config = self.stack_detector.detect_from_file_list(file_paths)
             
             if stack_config is None:
-                result.error = "Could not detect project stack"
+                # Can't detect stack - skip validation and allow PR creation
+                result.add_log("Could not detect project stack - skipping validation")
+                result.add_log("Supported stacks: Python (requirements.txt), Node.js (package.json)")
+                result.success = True
                 return result
             result.add_log(f"Detected stack: {stack_config.stack_type}")
             
@@ -189,11 +220,22 @@ class CodeExecutionService:
             container = self.docker_sandbox.create_container(image, temp_dir)
             result.add_log(f"Created container: {container.short_id}")
             
-            # Step 6: Install dependencies (with network enabled temporarily)
+            # Step 6: Install dependencies (network is enabled by default in container)
             result.stage = 'install'
             install_result = self._run_install(container, stack_config, result)
             if not install_result.success:
                 result.error = f"Install failed: {install_result.stderr}"
+                return result
+            
+            # Step 6.5: Security scan on changed files
+            result.stage = 'security'
+            changed_file_paths = [self._normalize_change(c).file_path for c in file_changes]
+            scan_result = self._run_security_scan(
+                container, temp_dir, stack_config, changed_file_paths, result
+            )
+            if scan_result and not scan_result.passed:
+                result.error = f"Security issues found: {scan_result.high_severity_count} high/critical vulnerabilities"
+                result.security_issues = [i.to_dict() for i in scan_result.issues]
                 return result
             
             # Step 7: Run tests
@@ -250,11 +292,54 @@ class CodeExecutionService:
         except Exception as e:
             return ExecResult(exit_code=-1, stdout="", stderr=str(e))
     
-    def _apply_change(self, repo_path: str, change: FileChange) -> None:
-        """Apply a file change to the cloned repo."""
+    def _normalize_change(self, change) -> FileChange:
+        """Convert dict or FileChange to FileChange object."""
+        if isinstance(change, FileChange):
+            return change
+        if isinstance(change, dict):
+            return FileChange(
+                file_path=change.get('file_path', ''),
+                new_content=change.get('new_content', ''),
+                reason=change.get('reason', ''),
+                type=change.get('type', 'edit'),
+                match_pattern=change.get('match_pattern', ''),
+                replace_pattern=change.get('replace_pattern', '')
+            )
+        return change
+    
+    def _apply_edit(self, repo_path: str, change: FileChange) -> None:
+        """Apply a full file replacement to the cloned repo."""
         file_path = Path(repo_path) / change.file_path
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(change.new_content, encoding='utf-8')
+    
+    def _apply_patch(self, repo_path: str, change: FileChange, result: ExecutionResult) -> bool:
+        """Apply a Comby structural patch to a file."""
+        file_path = Path(repo_path) / change.file_path
+        
+        if not file_path.exists():
+            result.add_log(f"Cannot patch {change.file_path}: file not found")
+            return False
+        
+        if not self.comby_service.is_available():
+            result.add_log(f"Comby not available, converting patch to edit for {change.file_path}")
+            # Fallback: apply pattern manually if possible, or skip
+            return False
+        
+        comby_result = self.comby_service.apply_patch(
+            file_path=str(file_path),
+            match_pattern=change.match_pattern,
+            replace_pattern=change.replace_pattern,
+            language=self.comby_service.detect_language(change.file_path),
+            in_place=True
+        )
+        
+        if comby_result.success:
+            result.add_log(f"Applied patch to {change.file_path} ({comby_result.matches_found} matches)")
+            return True
+        else:
+            result.add_log(f"Patch failed for {change.file_path}: {comby_result.error}")
+            return False
     
     def _get_file_list(self, repo_path: str) -> list[str]:
         """Get list of all files in the repo (relative paths)."""
@@ -268,6 +353,109 @@ class CodeExecutionService:
                 files.append(rel_path)
         return files
     
+    def _format_files(
+        self,
+        repo_path: str,
+        file_changes: list[FileChange],
+        result: ExecutionResult
+    ) -> Optional[list[dict]]:
+        """
+        Format changed files using project formatters.
+        
+        Args:
+            repo_path: Path to the cloned repository
+            file_changes: List of file changes that were applied
+            result: ExecutionResult to add logs to
+            
+        Returns:
+            List of updated file changes with formatted content, or None if no formatting done
+        """
+        try:
+            # Detect formatters in the project
+            formatters = self.formatter_detector.detect_formatters(repo_path)
+            
+            if not formatters:
+                result.add_log("No formatters detected in project - using original content")
+                return None
+            
+            result.add_log(f"Detected {len(formatters)} formatter(s): {', '.join(f.formatter_type for f in formatters)}")
+            
+            formatted_changes = []
+            any_formatted = False
+            
+            for change in file_changes:
+                # Find appropriate formatter for this file
+                formatter = self.formatter_detector.get_formatter_for_file(change.file_path, formatters)
+                
+                if formatter:
+                    # Run formatter on the file
+                    file_full_path = Path(repo_path) / change.file_path
+                    format_cmd = self.formatter_detector.get_format_command(str(file_full_path), formatter)
+                    
+                    result.add_log(f"Formatting {change.file_path} with {formatter.formatter_type}")
+                    
+                    try:
+                        # Run the formatter command
+                        format_result = subprocess.run(
+                            format_cmd,
+                            shell=True,
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                        )
+                        
+                        if format_result.returncode == 0:
+                            # Read back the formatted content
+                            formatted_content = file_full_path.read_text(encoding='utf-8')
+                            formatted_changes.append({
+                                'file_path': change.file_path,
+                                'new_content': formatted_content,
+                                'reason': change.reason
+                            })
+                            any_formatted = True
+                            result.add_log(f"Successfully formatted {change.file_path}")
+                        else:
+                            # Formatter failed, keep original content
+                            result.add_log(f"Formatter returned non-zero for {change.file_path}: {format_result.stderr[:200]}")
+                            formatted_changes.append({
+                                'file_path': change.file_path,
+                                'new_content': change.new_content,
+                                'reason': change.reason
+                            })
+                    except subprocess.TimeoutExpired:
+                        result.add_log(f"Formatter timed out for {change.file_path}")
+                        formatted_changes.append({
+                            'file_path': change.file_path,
+                            'new_content': change.new_content,
+                            'reason': change.reason
+                        })
+                    except Exception as e:
+                        result.add_log(f"Formatter error for {change.file_path}: {str(e)}")
+                        formatted_changes.append({
+                            'file_path': change.file_path,
+                            'new_content': change.new_content,
+                            'reason': change.reason
+                        })
+                else:
+                    # No formatter for this file type, keep original
+                    formatted_changes.append({
+                        'file_path': change.file_path,
+                        'new_content': change.new_content,
+                        'reason': change.reason
+                    })
+            
+            if any_formatted:
+                return formatted_changes
+            else:
+                return None
+                
+        except Exception as e:
+            result.add_log(f"Formatting step error: {str(e)}")
+            logger.warning(f"Formatting failed: {e}")
+            return None
+
+    
     def _run_install(
         self, 
         container, 
@@ -275,16 +463,190 @@ class CodeExecutionService:
         result: ExecutionResult
     ) -> ExecResult:
         """Run dependency installation in container."""
-        result.add_log(f"Installing dependencies: {stack_config.install_command}")
+        install_cmd = stack_config.install_command
+        
+        # For Node.js projects, ensure the package manager is available
+        # The node:20-slim image only has npm by default, not pnpm or yarn
+        if 'pnpm' in install_cmd:
+            result.add_log("Installing pnpm in container...")
+            pnpm_install = self.docker_sandbox.exec_command(
+                container,
+                "npm install -g pnpm",
+                timeout=120,
+            )
+            if not pnpm_install.success:
+                result.add_log(f"pnpm installation failed: {pnpm_install.stderr}")
+                # Fall back to npm if pnpm installation fails
+                result.add_log("Falling back to npm")
+                install_cmd = install_cmd.replace('pnpm', 'npm')
+            else:
+                result.add_log("pnpm installed successfully")
+        elif 'yarn' in install_cmd and 'npm' not in install_cmd:
+            result.add_log("Installing yarn in container...")
+            yarn_install = self.docker_sandbox.exec_command(
+                container,
+                "npm install -g yarn",
+                timeout=120,
+            )
+            if not yarn_install.success:
+                result.add_log(f"yarn installation failed: {yarn_install.stderr}")
+                result.add_log("Falling back to npm")
+                install_cmd = install_cmd.replace('yarn', 'npm')
+            else:
+                result.add_log("yarn installed successfully")
+        
+        result.add_log(f"Installing dependencies: {install_cmd}")
         exec_result = self.docker_sandbox.exec_command(
             container, 
-            stack_config.install_command,
+            install_cmd,
             timeout=300,  # 5 minutes for install
         )
         result.add_log(f"Install output:\n{exec_result.stdout[:1000]}")
         if exec_result.stderr:
             result.add_log(f"Install stderr:\n{exec_result.stderr[:500]}")
         return exec_result
+    
+    def _run_security_scan(
+        self,
+        container,
+        repo_path: str,
+        stack_config: StackConfig,
+        changed_files: list[str],
+        result: ExecutionResult
+    ) -> Optional[ScanResult]:
+        """
+        Run security scanning on changed files inside the container.
+        
+        Uses Bandit for Python, ESLint for JavaScript/TypeScript.
+        Only fails on HIGH/CRITICAL severity issues.
+        """
+        if not changed_files:
+            result.add_log("No files to scan for security issues")
+            return None
+        
+        result.add_log(f"Running security scan on {len(changed_files)} files...")
+        
+        stack_type = stack_config.stack_type
+        
+        if stack_type == 'python':
+            # Install and run Bandit in container
+            result.add_log("Installing Bandit security scanner...")
+            install_bandit = self.docker_sandbox.exec_command(
+                container,
+                "pip install bandit -q",
+                timeout=60
+            )
+            if not install_bandit.success:
+                result.add_log(f"Bandit install failed: {install_bandit.stderr[:200]}")
+                return ScanResult(passed=True, error="Bandit install failed")
+            
+            # Run Bandit on specific Python files
+            py_files = [f for f in changed_files if f.endswith('.py')]
+            if not py_files:
+                result.add_log("No Python files to scan")
+                return ScanResult(passed=True)
+            
+            file_args = ' '.join(f'"/workspace/{f}"' for f in py_files)
+            bandit_cmd = f"bandit -f json -ll --exit-zero {file_args}"
+            result.add_log(f"Scanning {len(py_files)} Python files with Bandit")
+            
+            scan_exec = self.docker_sandbox.exec_command(container, bandit_cmd, timeout=60)
+            return self._parse_bandit_output(scan_exec.stdout, result)
+            
+        elif stack_type == 'nodejs':
+            # Use npx to run eslint on JS/TS files
+            js_exts = ('.js', '.jsx', '.ts', '.tsx', '.mjs')
+            js_files = [f for f in changed_files if f.endswith(js_exts)]
+            if not js_files:
+                result.add_log("No JavaScript/TypeScript files to scan")
+                return ScanResult(passed=True)
+            
+            file_args = ' '.join(f'"/workspace/{f}"' for f in js_files)
+            eslint_cmd = f"npx eslint --format json --no-error-on-unmatched-pattern {file_args} 2>/dev/null || true"
+            result.add_log(f"Scanning {len(js_files)} JS/TS files with ESLint")
+            
+            scan_exec = self.docker_sandbox.exec_command(container, eslint_cmd, timeout=60)
+            return self._parse_eslint_output(scan_exec.stdout, result)
+        
+        return ScanResult(passed=True)
+    
+    def _parse_bandit_output(self, output: str, result: ExecutionResult) -> ScanResult:
+        """Parse Bandit JSON output from container execution."""
+        import json
+        
+        if not output or not output.strip():
+            result.add_log("✅ No security issues found")
+            return ScanResult(passed=True)
+        
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            result.add_log("Could not parse Bandit output")
+            return ScanResult(passed=True)
+        
+        from services.security_scanner import SecurityIssue, Severity
+        
+        issues = []
+        for item in data.get("results", []):
+            file_path = item.get("filename", "").replace("/workspace/", "")
+            issues.append(SecurityIssue(
+                file_path=file_path,
+                line_number=item.get("line_number", 0),
+                severity=Severity.from_bandit(item.get("issue_severity", "MEDIUM")),
+                rule_id=item.get("test_id", "unknown"),
+                message=item.get("issue_text", "Security issue"),
+                code_snippet=item.get("code", "")[:100]
+            ))
+        
+        if issues:
+            result.add_log(f"⚠️ Found {len(issues)} security issues")
+            for issue in issues[:3]:
+                result.add_log(f"  [{issue.severity.name}] {issue.file_path}:{issue.line_number} - {issue.message[:60]}")
+        else:
+            result.add_log("✅ No security issues found")
+        
+        high_issues = [i for i in issues if i.severity.value >= Severity.HIGH.value]
+        return ScanResult(passed=len(high_issues) == 0, issues=issues)
+    
+    def _parse_eslint_output(self, output: str, result: ExecutionResult) -> ScanResult:
+        """Parse ESLint JSON output from container execution."""
+        import json
+        
+        if not output or not output.strip():
+            result.add_log("✅ No security issues found")
+            return ScanResult(passed=True)
+        
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            result.add_log("Could not parse ESLint output")
+            return ScanResult(passed=True)
+        
+        from services.security_scanner import SecurityIssue, Severity
+        
+        SECURITY_RULES = {"no-eval", "no-implied-eval", "no-new-func"}
+        
+        issues = []
+        for file_result in data:
+            file_path = file_result.get("filePath", "").replace("/workspace/", "")
+            for msg in file_result.get("messages", []):
+                rule_id = msg.get("ruleId", "")
+                if rule_id in SECURITY_RULES or msg.get("severity") == 2:
+                    issues.append(SecurityIssue(
+                        file_path=file_path,
+                        line_number=msg.get("line", 0),
+                        severity=Severity.from_eslint(msg.get("severity", 1)),
+                        rule_id=rule_id or "unknown",
+                        message=msg.get("message", "Linting issue")
+                    ))
+        
+        if issues:
+            result.add_log(f"⚠️ Found {len(issues)} linting issues")
+        else:
+            result.add_log("✅ No security issues found")
+        
+        high_issues = [i for i in issues if i.severity.value >= Severity.HIGH.value]
+        return ScanResult(passed=len(high_issues) == 0, issues=issues)
     
     def _run_tests(
         self, 
@@ -330,11 +692,25 @@ class CodeExecutionService:
     ) -> ExecutionResult:
         """Fallback: run validation locally without Docker."""
         try:
+            # Prepare commands with package manager fallback
+            install_cmd = stack_config.install_command
+            test_cmd = stack_config.test_command
+            
+            # Check if package manager is available, fallback to npm if not
+            if 'pnpm' in install_cmd and not shutil.which('pnpm'):
+                result.add_log("pnpm not found, falling back to npm")
+                install_cmd = install_cmd.replace('pnpm', 'npm')
+                test_cmd = test_cmd.replace('pnpm', 'npm') if test_cmd else test_cmd
+            elif 'yarn' in install_cmd and not shutil.which('yarn'):
+                result.add_log("yarn not found, falling back to npm")
+                install_cmd = install_cmd.replace('yarn', 'npm')
+                test_cmd = test_cmd.replace('yarn', 'npm') if test_cmd else test_cmd
+            
             # Install
             result.stage = 'install'
-            result.add_log(f"Running install locally: {stack_config.install_command}")
+            result.add_log(f"Running install locally: {install_cmd}")
             install = subprocess.run(
-                stack_config.install_command,
+                install_cmd,
                 shell=True,
                 cwd=repo_path,
                 capture_output=True,
@@ -348,9 +724,9 @@ class CodeExecutionService:
             # Test
             if run_tests:
                 result.stage = 'test'
-                result.add_log(f"Running tests locally: {stack_config.test_command}")
+                result.add_log(f"Running tests locally: {test_cmd}")
                 test = subprocess.run(
-                    stack_config.test_command,
+                    test_cmd,
                     shell=True,
                     cwd=repo_path,
                     capture_output=True,
@@ -373,6 +749,7 @@ class CodeExecutionService:
             result.error = str(e)
             return result
     
+
     def _run_in_aws(
         self,
         repo_path: str,

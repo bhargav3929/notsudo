@@ -63,7 +63,7 @@ class TestCodeExecutionService:
         # .git should be excluded
         assert ".git/config" not in files
 
-    def test_apply_change_creates_file(self, tmp_path):
+    def test_apply_edit_creates_file(self, tmp_path):
         """Should create file with content."""
         change = FileChange(
             file_path='new_file.py',
@@ -71,12 +71,12 @@ class TestCodeExecutionService:
             reason='test'
         )
         
-        self.service._apply_change(str(tmp_path), change)
+        self.service._apply_edit(str(tmp_path), change)
         
         assert (tmp_path / "new_file.py").exists()
         assert (tmp_path / "new_file.py").read_text() == 'print("created")'
 
-    def test_apply_change_creates_directories(self, tmp_path):
+    def test_apply_edit_creates_directories(self, tmp_path):
         """Should create parent directories."""
         change = FileChange(
             file_path='deep/nested/dir/file.py',
@@ -84,7 +84,7 @@ class TestCodeExecutionService:
             reason='test'
         )
         
-        self.service._apply_change(str(tmp_path), change)
+        self.service._apply_edit(str(tmp_path), change)
         
         assert (tmp_path / "deep" / "nested" / "dir" / "file.py").exists()
 
@@ -337,8 +337,8 @@ class TestValidateChangesFlow:
         assert result.stage == 'test'
         assert result.exit_code == 2
 
-    def test_validate_changes_stack_detection_failure(self, tmp_path):
-        """Should return failure when stack cannot be detected."""
+    def test_validate_changes_stack_detection_skips_validation(self, tmp_path):
+        """Should skip validation when stack cannot be detected."""
         from services.code_execution import CodeExecutionService
         
         mock_detector = Mock()
@@ -360,8 +360,9 @@ class TestValidateChangesFlow:
                         run_tests=True
                     )
         
-        assert result.success is False
-        assert 'Could not detect project stack' in result.error
+        # Now skips validation with success when stack not detected
+        assert result.success is True
+        assert any('Could not detect project stack' in log for log in result.logs)
 
     def test_validate_changes_image_build_fallback(self, tmp_path):
         """Should fall back to stack image when project image build fails."""

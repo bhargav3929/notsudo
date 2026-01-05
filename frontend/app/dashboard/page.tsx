@@ -3,11 +3,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/dashboard/Sidebar";
-import { RepoList } from "@/components/dashboard/RepoList";
+import { GitHubAppSetup } from "@/components/dashboard/GitHubAppSetup";
 import { JobsTable } from "@/components/dashboard/jobs/JobsTable";
 import { OnboardingModal } from "@/components/dashboard/OnboardingModal";
 import { StatsCard } from "@/components/dashboard/StatsCard";
-import { RepositoriesGrid } from "@/components/dashboard/RepositoriesGrid";
 import { useSession } from "@/lib/auth-client";
 import { 
   Briefcase, 
@@ -225,17 +224,13 @@ export default function Dashboard() {
           <section>
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-mono text-xs uppercase tracking-wider text-gray-500">
-                Repositories ({repositories.length})
+                GitHub App & Repositories
               </h2>
               <div className="flex items-center gap-2">
                 <GitBranch className="w-4 h-4 text-gray-500" />
               </div>
             </div>
-            <RepositoriesGrid 
-              repositories={repositories} 
-              loading={loading}
-              onConnect={handleConnectRepo}
-            />
+            <GitHubAppSetup />
           </section>
         </div>
       </main>

@@ -11,6 +11,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 
 from services.groq_service import GroqService
+from services.ai_service import AIService, AVAILABLE_MODELS, DEFAULT_MODEL
 from services.github_service import GitHubService
 from services.pr_service import PRService
 from services import db as database
@@ -34,8 +35,33 @@ def load_config():
     return {
         'github_token': os.environ.get('GITHUB_TOKEN'),
         'groq_key': os.environ.get('GROQ_API_KEY'),
+        'openrouter_key': os.environ.get('OPENROUTER_API_KEY'),
+        'use_openrouter': os.environ.get('USE_OPENROUTER', 'false').lower() == 'true',
         'webhook_secret': os.environ.get('WEBHOOK_SECRET', '')
     }
+
+
+def get_ai_service(config, user_model=None):
+    """
+    Factory function to get the appropriate AI service.
+    
+    In development (USE_OPENROUTER=false): Uses GroqService
+    In production (USE_OPENROUTER=true): Uses AIService (OpenRouter)
+    
+    Args:
+        config: Application config dict
+        user_model: Optional user-selected model for OpenRouter
+    """
+    if config.get('use_openrouter'):
+        api_key = config.get('openrouter_key')
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY not configured")
+        return AIService(api_key=api_key, model=user_model)
+    else:
+        api_key = config.get('groq_key')
+        if not api_key:
+            raise ValueError("GROQ_API_KEY not configured")
+        return GroqService(api_key=api_key)
 
 def load_jobs():
     """Load jobs from database or fall back to JSON file."""
@@ -104,6 +130,40 @@ def is_rate_limited(repo_full_name, issue_number, window_seconds=60):
                     continue
     return False
 
+
+def create_job_atomically(repo_full_name, issue_number, job_data):
+    """
+    Create a job atomically, preventing race conditions from concurrent webhooks.
+    
+    Uses atomic database operation when available, falls back to in-memory checks
+    for JSON storage.
+    
+    Returns:
+        The created job dict if successful, None if a duplicate exists
+    """
+    if database.is_db_available():
+        # Use atomic database operation
+        result = database.atomic_create_job_if_not_exists(
+            repo_full_name=repo_full_name,
+            issue_number=issue_number,
+            job_data=job_data
+        )
+        if result is None:
+            logger.warning("job_duplicate_prevented_atomic", repo=repo_full_name, issue=issue_number)
+        return result
+    else:
+        # Fallback: use in-memory checks (not fully atomic, but best effort)
+        if is_job_in_progress(repo_full_name, issue_number):
+            logger.warning("job_duplicate_prevented", repo=repo_full_name, issue=issue_number)
+            return None
+        if is_rate_limited(repo_full_name, issue_number):
+            logger.warning("job_rate_limited", repo=repo_full_name, issue=issue_number)
+            return None
+        save_job(job_data)
+        return job_data
+
+
+
 def verify_github_signature(payload_body, signature_header, secret):
     if not signature_header or not secret:
         return False
@@ -136,8 +196,59 @@ def get_configuration():
     return jsonify({
         'hasGithubToken': bool(config.get('github_token')),
         'hasGroqKey': bool(config.get('groq_key')),
+        'hasOpenRouterKey': bool(config.get('openrouter_key')),
+        'useOpenRouter': config.get('use_openrouter', False),
         'hasWebhookSecret': bool(config.get('webhook_secret'))
     }), 200
+
+@app.route('/api/models', methods=['GET'])
+def get_available_models():
+    """Get list of available AI models."""
+    return jsonify({
+        'models': list(AVAILABLE_MODELS.values()),
+        'default': DEFAULT_MODEL
+    }), 200
+
+@app.route('/api/user/ai-settings', methods=['GET'])
+def get_user_ai_settings():
+    """Get user's AI settings (selected model and custom rules)."""
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'user_id is required'}), 400
+    
+    settings = database.get_user_ai_settings(user_id)
+    if settings is None:
+        return jsonify({
+            'selectedModel': DEFAULT_MODEL,
+            'customRules': ''
+        }), 200
+    
+    return jsonify(settings), 200
+
+@app.route('/api/user/ai-settings', methods=['PUT'])
+def update_user_ai_settings():
+    """Update user's AI settings."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'user_id is required'}), 400
+    
+    selected_model = data.get('selectedModel')
+    custom_rules = data.get('customRules')
+    
+    result = database.update_user_ai_settings(
+        user_id=user_id,
+        selected_model=selected_model,
+        custom_rules=custom_rules
+    )
+    
+    if result is None:
+        return jsonify({'error': 'Failed to update settings'}), 500
+    
+    return jsonify(result), 200
 
 @app.route('/api/webhook-url', methods=['GET'])
 def get_webhook_url():
@@ -317,10 +428,15 @@ def handle_webhook():
         return jsonify({'message': 'Ignored: @notsudo not mentioned'}), 200
     
     github_token = config.get('github_token')
-    groq_key = config.get('groq_key')
     
-    if not github_token or not groq_key:
-        return jsonify({'error': 'Missing API credentials'}), 500
+    if not github_token:
+        return jsonify({'error': 'Missing GitHub token'}), 500
+    
+    # Validate AI service availability
+    try:
+        _ = get_ai_service(config)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 500
     
     repo_full_name = repository.get('full_name')
     issue_number = issue.get('number')
@@ -339,15 +455,7 @@ def handle_webhook():
             'issue_data': issue
         }), 400
     
-    # Check for duplicates and rate limiting
-    if is_job_in_progress(repo_full_name, issue_number):
-        logger.warning("job_duplicate_prevented", repo=repo_full_name, issue=issue_number)
-        return jsonify({'message': 'Job already in progress for this issue'}), 429
-
-    if is_rate_limited(repo_full_name, issue_number):
-        logger.warning("job_rate_limited", repo=repo_full_name, issue=issue_number)
-        return jsonify({'message': 'Rate limit exceeded for this issue. Please wait.'}), 429
-
+    # Build job data
     job = {
         'id': f"{repo_full_name}-{issue_number}-{datetime.now().timestamp()}",
         'repo': repo_full_name,
@@ -362,11 +470,17 @@ def handle_webhook():
         'logs': ['Job started'],
         'validationLogs': []
     }
-    save_job(job)
+    
+    # Atomically check for duplicates and create job
+    created_job = create_job_atomically(repo_full_name, issue_number, job)
+    if created_job is None:
+        return jsonify({'message': 'Job already in progress or rate limited for this issue'}), 429
+    
+
     
     try:
         github_service = GitHubService(github_token)
-        ai_service = GroqService(api_key=groq_key)
+        ai_service = get_ai_service(config)
         pr_service = PRService(github_service, ai_service)
         
         job['stage'] = 'generating'
@@ -426,10 +540,15 @@ def test_issue():
     """
     config = load_config()
     github_token = config.get('github_token')
-    groq_key = config.get('groq_key')
     
-    if not github_token or not groq_key:
-        return jsonify({'error': 'Missing API credentials'}), 500
+    if not github_token:
+        return jsonify({'error': 'Missing GitHub token'}), 500
+    
+    # Validate AI service availability
+    try:
+        _ = get_ai_service(config)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 500
     
     data = request.get_json()
     
@@ -473,7 +592,7 @@ def test_issue():
     
     try:
         github_service = GitHubService(github_token)
-        ai_service = GroqService(api_key=groq_key)
+        ai_service = get_ai_service(config)
         pr_service = PRService(github_service, ai_service)
         
         job['stage'] = 'generating'
@@ -803,6 +922,356 @@ def auth_user():
     return jsonify({
         'error': 'Please use the frontend /api/auth/session to get user info.'
     }), 410
+
+
+# =====================
+# GitHub App Routes
+# =====================
+
+@app.route('/api/github-app/status', methods=['GET'])
+def github_app_status():
+    """Check if GitHub App is configured and get installation URL."""
+    from services.github_app import get_github_app_service
+    
+    try:
+        app_service = get_github_app_service()
+        
+        if not app_service.is_configured():
+            return jsonify({
+                'configured': False,
+                'message': 'GitHub App is not configured. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY in your environment.'
+            }), 200
+        
+        # Try to get app info
+        try:
+            app_info = app_service.get_app_info()
+            install_url = app_service.get_installation_url()
+            return jsonify({
+                'configured': True,
+                'app_name': app_info.get('name'),
+                'app_slug': app_info.get('slug'),
+                'install_url': install_url,
+                'html_url': app_info.get('html_url')
+            }), 200
+        except Exception as e:
+            logger.error("github_app_info_failed", error=str(e))
+            return jsonify({
+                'configured': True,
+                'error': str(e)
+            }), 200
+            
+    except Exception as e:
+        logger.error("github_app_status_failed", error=str(e))
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/github-app/installations', methods=['GET'])
+def get_github_app_installations():
+    """Get all installations of the GitHub App."""
+    from services.github_app import get_github_app_service
+    
+    try:
+        app_service = get_github_app_service()
+        
+        if not app_service.is_configured():
+            return jsonify({'error': 'GitHub App not configured'}), 400
+        
+        installations = app_service.list_installations()
+        
+        return jsonify({
+            'installations': [{
+                'id': inst.get('id'),
+                'account': inst.get('account', {}).get('login'),
+                'account_type': inst.get('account', {}).get('type'),
+                'repository_selection': inst.get('repository_selection'),
+                'html_url': inst.get('html_url'),
+                'suspended_at': inst.get('suspended_at')
+            } for inst in installations],
+            'count': len(installations)
+        }), 200
+        
+    except Exception as e:
+        logger.error("get_installations_failed", error=str(e))
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/github-app/installations/<int:installation_id>/repos', methods=['GET'])
+def get_installation_repos(installation_id):
+    """Get repositories for a specific installation."""
+    from services.github_app import get_github_app_service
+    
+    try:
+        app_service = get_github_app_service()
+        
+        if not app_service.is_configured():
+            return jsonify({'error': 'GitHub App not configured'}), 400
+        
+        repos = app_service.get_installation_repos(installation_id)
+        
+        return jsonify({
+            'repos': [{
+                'id': str(repo.get('id')),
+                'name': repo.get('name'),
+                'full_name': repo.get('full_name'),
+                'private': repo.get('private', False),
+                'html_url': repo.get('html_url'),
+                'description': repo.get('description'),
+                'language': repo.get('language'),
+                'default_branch': repo.get('default_branch', 'main')
+            } for repo in repos],
+            'count': len(repos)
+        }), 200
+        
+    except Exception as e:
+        logger.error("get_installation_repos_failed", error=str(e), installation_id=installation_id)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/github-app/webhook', methods=['POST'])
+def handle_github_app_webhook():
+    """
+    Handle webhooks from GitHub App.
+    This receives installation events and issue comment events.
+    """
+    from services.github_app import get_github_app_service
+    
+    raw_data = request.data
+    signature = request.headers.get('X-Hub-Signature-256')
+    event_type = request.headers.get('X-GitHub-Event')
+    
+    app_service = get_github_app_service()
+    
+    # Verify signature if webhook secret is configured
+    if app_service.webhook_secret:
+        if not app_service.verify_webhook_signature(raw_data, signature):
+            logger.warning("github_app_webhook_invalid_signature")
+            return jsonify({'error': 'Invalid signature'}), 403
+    
+    try:
+        data = json.loads(raw_data) if raw_data else None
+    except (json.JSONDecodeError, TypeError):
+        return jsonify({'error': 'Invalid JSON'}), 400
+    
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+    
+    action = data.get('action')
+    
+    logger.info(
+        "github_app_webhook_received",
+        event_type=event_type,
+        action=action
+    )
+    
+    # Handle installation events
+    if event_type == 'installation':
+        return handle_installation_event(data, action)
+    
+    # Handle installation_repositories events (when repos are added/removed)
+    if event_type == 'installation_repositories':
+        return handle_installation_repos_event(data, action)
+    
+    # Handle issue_comment events (same as before, but from app)
+    if event_type == 'issue_comment':
+        return handle_issue_comment_from_app(data, action)
+    
+    # Ignore other events
+    return jsonify({'message': f'Event {event_type} ignored'}), 200
+
+
+def handle_installation_event(data, action):
+    """Handle GitHub App installation/uninstallation events."""
+    installation = data.get('installation', {})
+    
+    installation_id = str(installation.get('id'))
+    account = installation.get('account', {})
+    
+    logger.info(
+        "installation_event",
+        action=action,
+        installation_id=installation_id,
+        account=account.get('login')
+    )
+    
+    if action in ['created', 'new_permissions_accepted']:
+        # Store installation in database
+        if database.is_db_available():
+            from services.models import GitHubAppInstallation
+            from services.db import get_db_session
+            
+            with get_db_session() as session:
+                existing = session.query(GitHubAppInstallation).filter_by(id=installation_id).first()
+                
+                if existing:
+                    existing.repository_selection = installation.get('repository_selection', 'all')
+                    existing.suspended_at = None
+                    existing.updated_at = datetime.now()
+                else:
+                    new_installation = GitHubAppInstallation(
+                        id=installation_id,
+                        account_login=account.get('login'),
+                        account_type=account.get('type', 'User'),
+                        account_id=account.get('id'),
+                        target_type=installation.get('target_type'),
+                        repository_selection=installation.get('repository_selection', 'all'),
+                        access_tokens_url=installation.get('access_tokens_url'),
+                        repositories_url=installation.get('repositories_url'),
+                        html_url=installation.get('html_url'),
+                        app_id=installation.get('app_id')
+                    )
+                    session.add(new_installation)
+                
+                session.commit()
+        
+        return jsonify({'message': 'Installation recorded'}), 200
+    
+    elif action == 'deleted':
+        # Remove installation from database
+        if database.is_db_available():
+            from services.models import GitHubAppInstallation
+            from services.db import get_db_session
+            
+            with get_db_session() as session:
+                session.query(GitHubAppInstallation).filter_by(id=installation_id).delete()
+                session.commit()
+        
+        return jsonify({'message': 'Installation removed'}), 200
+    
+    elif action == 'suspended':
+        if database.is_db_available():
+            from services.models import GitHubAppInstallation
+            from services.db import get_db_session
+            
+            with get_db_session() as session:
+                existing = session.query(GitHubAppInstallation).filter_by(id=installation_id).first()
+                if existing:
+                    existing.suspended_at = datetime.now()
+                    session.commit()
+        
+        return jsonify({'message': 'Installation suspended'}), 200
+    
+    return jsonify({'message': f'Installation action {action} handled'}), 200
+
+
+def handle_installation_repos_event(data, action):
+    """Handle when repositories are added/removed from an installation."""
+    installation = data.get('installation', {})
+    installation_id = str(installation.get('id'))
+    
+    repos_added = data.get('repositories_added', [])
+    repos_removed = data.get('repositories_removed', [])
+    
+    logger.info(
+        "installation_repos_event",
+        action=action,
+        installation_id=installation_id,
+        repos_added=len(repos_added),
+        repos_removed=len(repos_removed)
+    )
+    
+    # For now, just log it - repos are fetched dynamically when needed
+    return jsonify({
+        'message': 'Repository changes recorded',
+        'added': len(repos_added),
+        'removed': len(repos_removed)
+    }), 200
+
+
+def handle_issue_comment_from_app(data, action):
+    """Handle issue comments from GitHub App webhook."""
+    if action != 'created':
+        return jsonify({'message': 'Ignored: not a comment creation'}), 200
+    
+    comment = data.get('comment', {})
+    issue = data.get('issue', {})
+    repository = data.get('repository', {})
+    installation = data.get('installation', {})
+    
+    comment_body = comment.get('body', '')
+    
+    if '@notsudo' not in comment_body:
+        return jsonify({'message': 'Ignored: @notsudo not mentioned'}), 200
+    
+    repo_full_name = repository.get('full_name')
+    issue_number = issue.get('number')
+    issue_title = issue.get('title')
+    issue_body = issue.get('body', '')
+    installation_id = installation.get('id')
+    
+    if not repo_full_name or not issue_number:
+        return jsonify({'error': 'Missing repo or issue info'}), 400
+    
+    # Get installation access token first (before creating job)
+    from services.github_app import get_github_app_service
+    
+    try:
+        app_service = get_github_app_service()
+        token_data = app_service.get_installation_access_token(installation_id)
+        github_token = token_data['token']
+    except Exception as e:
+        logger.error("failed_to_get_installation_token", error=str(e))
+        return jsonify({'error': 'Failed to get installation token'}), 500
+    
+    groq_key = load_config().get('groq_key')
+    
+    if not groq_key:
+        return jsonify({'error': 'GROQ API key not configured'}), 500
+    
+    # Build job data
+    job = {
+        'id': f"{repo_full_name}-{issue_number}-{datetime.now().timestamp()}",
+        'repo': repo_full_name,
+        'issueNumber': issue_number,
+        'issueTitle': issue_title,
+        'status': 'processing',
+        'stage': 'analyzing',
+        'retryCount': 0,
+        'createdAt': datetime.now().isoformat(),
+        'prUrl': None,
+        'error': None,
+        'logs': ['Job started via GitHub App webhook'],
+        'validationLogs': []
+    }
+    
+    # Atomically check for duplicates and create job
+    created_job = create_job_atomically(repo_full_name, issue_number, job)
+    if created_job is None:
+        return jsonify({'message': 'Job already in progress or rate limited'}), 429
+    
+
+    
+    try:
+        github_service = GitHubService(github_token)
+        ai_service = GroqService(api_key=groq_key)
+        pr_service = PRService(github_service, ai_service)
+        
+        job['stage'] = 'generating'
+        job['logs'].append('AI analyzing issue...')
+        save_job(job)
+        
+        result = pr_service.process_issue(
+            repo_full_name=repo_full_name,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            issue_body=issue_body,
+            comment_body=comment_body
+        )
+        
+        job['status'] = 'completed' if result.get('success') else 'failed'
+        job['completedAt'] = datetime.now().isoformat()
+        job['prUrl'] = result.get('pr_url')
+        job['error'] = result.get('message') if not result.get('success') else None
+        job['stage'] = 'completed' if result.get('success') else 'failed'
+        save_job(job)
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        job['status'] = 'failed'
+        job['error'] = str(e)
+        job['stage'] = 'error'
+        save_job(job)
+        return jsonify({'error': str(e)}), 500
 
 
 # =====================

@@ -28,7 +28,7 @@ class GroqService:
         self.model = model or DEFAULT_GROQ_MODEL
         logger.info("groq_service_initialized", model=self.model)
         
-    def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files):
+    def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files, custom_rules=None):
         """
         Analyze a GitHub issue and plan code changes using tool calling.
         
@@ -89,8 +89,16 @@ Rules:
 1. Only suggest changes that directly address the issue
 2. Maintain code style and conventions from the existing codebase
 3. Make minimal, focused changes
-4. Provide complete file content in new_content, not just diffs
-5. Call edit_file for each file that needs to be changed"""
+4. Provide COMPLETE file content in new_content - include the ENTIRE file from start to end
+5. Call edit_file for each file that needs to be changed
+6. NEVER minify, condense, summarize, or truncate the file content
+7. Preserve EXACT formatting: indentation, line breaks, whitespace, and structure
+8. Do NOT compress JSON, YAML, or any structured files into single lines
+9. The new_content must be a drop-in replacement for the entire original file"""
+
+        # Add custom rules if provided
+        if custom_rules and custom_rules.strip():
+            system_prompt += f"\n\nAdditional Custom Rules:\n{custom_rules}"
 
         user_prompt = f"""GitHub Issue: {issue_title}
 
@@ -256,7 +264,11 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
 Rules:
 1. Focus on the actual error, not unrelated changes
 2. Maintain the original intent of the changes
-3. Provide complete file content, not diffs"""
+3. Provide COMPLETE file content in new_content - include the ENTIRE file from start to end
+4. NEVER minify, condense, summarize, or truncate the file content
+5. Preserve EXACT formatting: indentation, line breaks, whitespace, and structure
+6. Do NOT compress JSON, YAML, or any structured files into single lines
+7. The new_content must be a drop-in replacement for the entire original file"""
 
         user_prompt = f"""The following code changes were made, but tests failed.
 

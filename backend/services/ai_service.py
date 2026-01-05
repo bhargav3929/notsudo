@@ -1,10 +1,26 @@
 import json
 import os
+import hashlib
+from pathlib import Path
 from openai import OpenAI
 from utils.logger import get_logger
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-5-nano")
+
+# Available models for OpenRouter
+AVAILABLE_MODELS = {
+    'claude-sonnet-4': {
+        'id': 'anthropic/claude-sonnet-4',
+        'name': 'Claude Sonnet 4',
+        'provider': 'anthropic'
+    },
+}
+
+DEFAULT_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
+
+# Enable LLM caching during development
+ENABLE_LLM_CACHE = os.environ.get('ENABLE_LLM_CACHE', 'false').lower() == 'true'
+LLM_CACHE_DIR = Path(os.environ.get('LLM_CACHE_DIR', '/tmp/llm_cache'))
 
 logger = get_logger(__name__)
 
@@ -16,9 +32,50 @@ class AIService:
             base_url=OPENROUTER_BASE_URL
         )
         self.model = model or DEFAULT_MODEL
-        logger.info("ai_service_initialized", model=self.model, base_url=OPENROUTER_BASE_URL)
+        self.cache_enabled = ENABLE_LLM_CACHE
+        self.cache_dir = LLM_CACHE_DIR
         
-    def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files):
+        if self.cache_enabled:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("llm_cache_enabled", cache_dir=str(self.cache_dir))
+        
+        logger.info("ai_service_initialized", model=self.model, base_url=OPENROUTER_BASE_URL)
+    
+    def _get_cache_key(self, *args) -> str:
+        """Generate a cache key from the input arguments."""
+        content = json.dumps(args, sort_keys=True, default=str)
+        return hashlib.sha256(content.encode()).hexdigest()[:16]
+    
+    def _get_cached_response(self, cache_key: str):
+        """Try to get a cached response."""
+        if not self.cache_enabled:
+            return None
+        
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    cached = json.load(f)
+                logger.info("llm_cache_hit", cache_key=cache_key)
+                return cached
+            except (json.JSONDecodeError, IOError):
+                pass
+        return None
+    
+    def _save_to_cache(self, cache_key: str, response: dict):
+        """Save a response to the cache."""
+        if not self.cache_enabled:
+            return
+        
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(response, f)
+            logger.info("llm_cache_saved", cache_key=cache_key)
+        except IOError as e:
+            logger.warning("llm_cache_save_failed", error=str(e))
+        
+    def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files, custom_rules=None):
         logger.info(
             "analyzing_issue",
             issue_title=issue_title,
@@ -26,10 +83,47 @@ class AIService:
             codebase_files_count=len(codebase_files)
         )
         
-        codebase_context = "\n\n".join([
-            f"File: {file['path']}\n```\n{file['content'][:2000]}\n```"
-            for file in codebase_files
-        ])
+        # Check cache first
+        cache_key = self._get_cache_key(
+            'analyze', issue_title, issue_body, comment_body,
+            [(f['path'], f['content'][:500]) for f in codebase_files]  # Use truncated content for cache key
+        )
+        cached = self._get_cached_response(cache_key)
+        if cached:
+            return cached
+        
+        # Build codebase context with truncation warnings for large files
+        MAX_FILE_CHARS = 2000
+        context_parts = []
+        truncated_files = []
+        
+        for file in codebase_files:
+            content = file['content']
+            is_truncated = len(content) > MAX_FILE_CHARS
+            
+            if is_truncated:
+                truncated_files.append({
+                    'path': file['path'],
+                    'original_size': len(content),
+                    'shown_size': MAX_FILE_CHARS
+                })
+                context_parts.append(
+                    f"File: {file['path']} [TRUNCATED - showing {MAX_FILE_CHARS}/{len(content)} chars]\n```\n{content[:MAX_FILE_CHARS]}\n```"
+                )
+            else:
+                context_parts.append(
+                    f"File: {file['path']}\n```\n{content}\n```"
+                )
+        
+        codebase_context = "\n\n".join(context_parts)
+        
+        # Log warning if files were truncated
+        if truncated_files:
+            logger.warning(
+                "files_truncated_for_context",
+                truncated_count=len(truncated_files),
+                files=[f['path'] for f in truncated_files]
+            )
         
         logger.debug("codebase_context_built", context_length=len(codebase_context))
         
@@ -38,7 +132,7 @@ class AIService:
                 "type": "function",
                 "function": {
                     "name": "edit_file",
-                    "description": "Edit a file in the codebase with new content",
+                    "description": "Replace entire file content. Use for new files or when the whole file structure needs to change.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -58,17 +152,63 @@ class AIService:
                         "required": ["file_path", "new_content", "reason"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "patch_file",
+                    "description": "Apply a targeted structural transformation using pattern matching. Use for renaming, updating calls, or changing specific code patterns without replacing the entire file.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "The path to the file to modify"
+                            },
+                            "match_pattern": {
+                                "type": "string",
+                                "description": "Pattern to match using :[hole] syntax for wildcards. Example: 'print(:[arg])' matches any print call."
+                            },
+                            "replace_pattern": {
+                                "type": "string",
+                                "description": "Replacement pattern using the same :[hole] names. Example: 'logging.info(:[arg])'"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Explanation of the transformation"
+                            }
+                        },
+                        "required": ["file_path", "match_pattern", "replace_pattern", "reason"]
+                    }
+                }
             }
         ]
         
-        system_prompt = """You are an expert software engineer. Analyze the GitHub issue and suggest code changes by calling the edit_file function.
-        
+        system_prompt = """You are an expert software engineer. Analyze the GitHub issue and suggest code changes.
+
+You have TWO tools for making changes:
+
+1. **patch_file** - For TARGETED changes (PREFERRED):
+   - Use :[hole_name] syntax to match any expression
+   - Example: 'print(:[arg])' → 'logging.info(:[arg])' replaces print calls
+   - Example: 'def old_name(:[args])' → 'def new_name(:[args])' renames functions
+   - Preserves surrounding code automatically
+   - Use for: renaming, updating function calls, changing imports, fixing patterns
+
+2. **edit_file** - For FULL file replacement:
+   - Use only for NEW files or when entire structure must change
+   - Provide COMPLETE file content (never truncate)
+   - Preserve exact formatting and whitespace
+
 Rules:
-1. Only suggest changes that directly address the issue
-2. Maintain code style and conventions from the existing codebase
-3. Make minimal, focused changes
-4. Provide complete file content in new_content, not just diffs
-5. Call edit_file for each file that needs to be changed"""
+1. PREFER patch_file for targeted changes - it's safer and more precise
+2. Use edit_file only when patch_file cannot express the change
+3. Make minimal, focused changes that directly address the issue
+4. Maintain code style and conventions from the existing codebase"""
+
+        # Add custom rules if provided
+        if custom_rules and custom_rules.strip():
+            system_prompt += f"\n\nAdditional Custom Rules:\n{custom_rules}"
 
         user_prompt = f"""GitHub Issue: {issue_title}
 
@@ -140,6 +280,16 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
                             reason = args.get('reason')
                             new_content = args.get('new_content', '')
                             
+                            # Normalize newlines - some models return escaped newlines
+                            # as literal \\n strings instead of actual newline characters
+                            if new_content:
+                                # Replace literal \n strings with actual newlines
+                                new_content = new_content.replace('\\n', '\n')
+                                # Also handle \\r\\n for Windows-style line endings
+                                new_content = new_content.replace('\\r\\n', '\n')
+                                # Handle any remaining \\r
+                                new_content = new_content.replace('\\r', '\n')
+                            
                             logger.info(
                                 "file_change_parsed",
                                 file_path=file_path,
@@ -149,8 +299,38 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
                             )
                             
                             file_changes.append({
+                                'type': 'edit',  # Full file replacement
                                 'file_path': file_path,
                                 'new_content': new_content,
+                                'reason': reason
+                            })
+                        except json.JSONDecodeError as e:
+                            logger.error(
+                                "tool_call_parse_error",
+                                error=str(e),
+                                raw_args=tool_call.function.arguments[:500]
+                            )
+                    elif tool_call.function.name == "patch_file":
+                        try:
+                            args = json.loads(tool_call.function.arguments)
+                            file_path = args.get('file_path')
+                            match_pattern = args.get('match_pattern', '')
+                            replace_pattern = args.get('replace_pattern', '')
+                            reason = args.get('reason', '')
+                            
+                            logger.info(
+                                "patch_change_parsed",
+                                file_path=file_path,
+                                match_pattern=match_pattern[:100],
+                                replace_pattern=replace_pattern[:100],
+                                reason=reason
+                            )
+                            
+                            file_changes.append({
+                                'type': 'patch',  # Structural transformation
+                                'file_path': file_path,
+                                'match_pattern': match_pattern,
+                                'replace_pattern': replace_pattern,
                                 'reason': reason
                             })
                         except json.JSONDecodeError as e:
@@ -169,10 +349,15 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
             
             logger.info("analysis_complete", total_changes=len(file_changes))
             
-            return {
+            result = {
                 'file_changes': file_changes,
                 'analysis': message.content or "AI suggested file changes via tool calls"
             }
+            
+            # Save to cache for future requests
+            self._save_to_cache(cache_key, result)
+            
+            return result
             
         except Exception as e:
             logger.error("llm_call_failed", error=str(e), model=self.model)
@@ -224,7 +409,11 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
 Rules:
 1. Focus on the actual error, not unrelated changes
 2. Maintain the original intent of the changes
-3. Provide complete file content, not diffs"""
+3. Provide COMPLETE file content in new_content - include the ENTIRE file from start to end
+4. NEVER minify, condense, summarize, or truncate the file content
+5. Preserve EXACT formatting: indentation, line breaks, whitespace, and structure
+6. Do NOT compress JSON, YAML, or any structured files into single lines
+7. The new_content must be a drop-in replacement for the entire original file"""
 
         user_prompt = f"""The following code changes were made, but tests failed.
 
@@ -275,12 +464,19 @@ Analyze the errors and provide fixed versions of the files using edit_file."""
                             args = json.loads(tool_call.function.arguments)
                             file_path = args.get('file_path')
                             reason = args.get('reason', 'Fix test failure')
+                            new_content = args.get('new_content', '')
+                            
+                            # Normalize newlines - some models return escaped newlines
+                            if new_content:
+                                new_content = new_content.replace('\\n', '\n')
+                                new_content = new_content.replace('\\r\\n', '\n')
+                                new_content = new_content.replace('\\r', '\n')
                             
                             logger.info("fix_parsed", file_path=file_path, reason=reason)
                             
                             file_changes.append({
                                 'file_path': file_path,
-                                'new_content': args.get('new_content'),
+                                'new_content': new_content,
                                 'reason': reason
                             })
                         except json.JSONDecodeError as e:

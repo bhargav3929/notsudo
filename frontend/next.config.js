@@ -32,11 +32,6 @@ const nextConfig = {
           },
         ],
       },
-      {
-        // Fallback: proxy non-auth API routes
-        source: '/api/((?!auth).*)',
-        destination: 'http://localhost:8000/api/$1',
-      },
     ]
   },
   webpack: (config) => {

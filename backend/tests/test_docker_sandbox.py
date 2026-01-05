@@ -343,7 +343,7 @@ class TestSandboxConfig:
         
         config = SandboxConfig()
         
-        assert config.memory_limit == "512m"
+        assert config.memory_limit == "1g"
         assert config.cpu_period == 100000
         assert config.cpu_quota == 50000
         assert config.network_disabled is True

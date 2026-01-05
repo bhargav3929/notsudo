@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from services.models import Base, User, Repository, Job, Issue
@@ -81,7 +81,7 @@ def is_db_available() -> bool:
         with get_db_session() as session:
             if session is None:
                 return False
-            session.execute("SELECT 1")
+            session.execute(text("SELECT 1"))
             return True
     except Exception:
         return False
@@ -186,6 +186,89 @@ def get_job_by_id(job_id: str) -> Optional[Dict[str, Any]]:
             return job_to_dict(job) if job else None
     except Exception as e:
         logger.error("get_job_by_id_failed", error=str(e))
+        return None
+
+
+def atomic_create_job_if_not_exists(
+    repo_full_name: str,
+    issue_number: int,
+    job_data: Dict[str, Any],
+    window_seconds: int = 60
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomically create a job if no in-progress job exists for this issue.
+    
+    Uses a single database transaction to check and insert, preventing race conditions
+    when multiple webhook handlers receive the same event simultaneously.
+    
+    Args:
+        repo_full_name: Full name of the repository (owner/repo)
+        issue_number: Issue number being processed
+        job_data: Job data to insert if no duplicate exists
+        window_seconds: Time window to check for recent jobs
+        
+    Returns:
+        The created job dict if successful, None if a duplicate was found
+    """
+    try:
+        with get_db_session() as session:
+            if session is None:
+                logger.warning("atomic_create_job: database not available")
+                return None
+            
+            from datetime import timedelta
+            from sqlalchemy import and_, or_
+            
+            now = datetime.utcnow()
+            window_start = now - timedelta(seconds=window_seconds)
+            
+            # Check for any in-progress or recently created jobs for this issue
+            # The job ID format is: "{repo_full_name}-{issue_number}-{timestamp}"
+            job_id_prefix = f"{repo_full_name}-{issue_number}-"
+            
+            existing = session.query(Job).filter(
+                and_(
+                    Job.id.like(f"{job_id_prefix}%"),
+                    or_(
+                        Job.status.in_(['processing', 'generating', 'analyzing']),
+                        Job.created_at >= window_start
+                    )
+                )
+            ).first()
+            
+            if existing:
+                logger.warning(
+                    "atomic_create_job_duplicate_prevented",
+                    existing_job_id=existing.id,
+                    existing_status=existing.status,
+                    repo=repo_full_name,
+                    issue=issue_number
+                )
+                return None
+            
+            # No duplicate found, create the job
+            job = Job(
+                id=job_data.get('id'),
+                user_id=job_data.get('userId') or job_data.get('user_id'),
+                repository_id=job_data.get('repositoryId') or job_data.get('repository_id'),
+                issue_number=job_data.get('issueNumber') or job_data.get('issue_number'),
+                issue_title=job_data.get('issueTitle') or job_data.get('issue_title'),
+                status=job_data.get('status', 'processing'),
+                stage=job_data.get('stage', 'analyzing'),
+                retry_count=job_data.get('retryCount') or job_data.get('retry_count', 0),
+                pr_url=job_data.get('prUrl') or job_data.get('pr_url'),
+                error=job_data.get('error'),
+                logs=job_data.get('logs', []),
+                validation_logs=job_data.get('validationLogs') or job_data.get('validation_logs', []),
+            )
+            session.add(job)
+            session.flush()
+            
+            logger.info("atomic_job_created", job_id=job.id)
+            return job_to_dict(job)
+            
+    except Exception as e:
+        logger.error("atomic_create_job_failed", error=str(e))
         return None
 
 
@@ -414,3 +497,52 @@ def get_stats(user_id: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         logger.error("get_stats_failed", error=str(e))
         return {'error': str(e)}
+
+
+# ======================
+# User AI Settings
+# ======================
+
+def get_user_ai_settings(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get user's AI settings (selected model and custom rules)."""
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return None
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return None
+            return {
+                'selectedModel': user.selectedModel,
+                'customRules': user.customRules,
+            }
+    except Exception as e:
+        logger.error("get_user_ai_settings_failed", error=str(e), user_id=user_id)
+        return None
+
+
+def update_user_ai_settings(user_id: str, selected_model: Optional[str] = None, custom_rules: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Update user's AI settings."""
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return None
+            user = session.query(User).filter(User.id == user_id).first()
+            if not user:
+                return None
+            
+            if selected_model is not None:
+                user.selectedModel = selected_model
+            if custom_rules is not None:
+                user.customRules = custom_rules
+            
+            session.flush()
+            logger.info("user_ai_settings_updated", user_id=user_id)
+            return {
+                'selectedModel': user.selectedModel,
+                'customRules': user.customRules,
+            }
+    except Exception as e:
+        logger.error("update_user_ai_settings_failed", error=str(e), user_id=user_id)
+        return None
+

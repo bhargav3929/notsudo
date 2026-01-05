@@ -34,12 +34,20 @@ class GitHubService:
     def _log_rate_limit(self):
         try:
             rate_limit = self.github.get_rate_limit()
-            core = rate_limit.core
+            # Handle both old and new PyGithub API
+            if hasattr(rate_limit, 'core'):
+                core = rate_limit.core
+            elif hasattr(rate_limit, 'rate'):
+                core = rate_limit.rate
+            else:
+                # Newer versions may have different structure
+                core = rate_limit
+            
             logger.info(
                 "github_rate_limit",
-                remaining=core.remaining,
-                limit=core.limit,
-                reset=core.reset.isoformat()
+                remaining=getattr(core, 'remaining', 'unknown'),
+                limit=getattr(core, 'limit', 'unknown'),
+                reset=getattr(core, 'reset', None).isoformat() if hasattr(core, 'reset') and core.reset else 'unknown'
             )
         except Exception as e:
             logger.warning("failed_to_check_rate_limit", error=str(e))
@@ -393,6 +401,36 @@ class GitHubService:
         except GithubException as e:
             logger.error("branch_creation_failed", branch=branch_name, error=str(e))
             return False
+
+    def delete_branch(self, repo, branch_name):
+        """Delete a branch from the repository."""
+        logger.info("deleting_branch", branch=branch_name)
+        try:
+            # Check if branch exists first
+            try:
+                ref = repo.get_git_ref(f"heads/{branch_name}")
+                ref.delete()
+                logger.info("branch_deleted", branch=branch_name)
+                return True
+            except UnknownObjectException:
+                logger.info("branch_not_found_for_deletion", branch=branch_name)
+                return True  # Consider success if it doesn't exist
+                
+        except Exception as e:
+            logger.warning("branch_deletion_failed", branch=branch_name, error=str(e))
+            return False
+
+    def add_issue_comment(self, repo, issue_number, body):
+        """Add a comment to an issue."""
+        logger.info("adding_issue_comment", issue_number=issue_number)
+        try:
+            issue = repo.get_issue(number=issue_number)
+            comment = issue.create_comment(body)
+            logger.info("issue_comment_added", comment_id=comment.id)
+            return {'success': True, 'comment_id': comment.id}
+        except Exception as e:
+            logger.error("issue_comment_failed", error=str(e))
+            return {'success': False, 'error': str(e)}
     
     def update_file(self, repo, file_path, content, message, branch):
         logger.info("updating_file", path=file_path, branch=branch)
