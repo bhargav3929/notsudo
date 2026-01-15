@@ -15,6 +15,8 @@ from services.ai_service import AIService, AVAILABLE_MODELS, DEFAULT_MODEL
 from services.github_service import GitHubService
 from services.pr_service import PRService
 from services import db as database
+from services.redis_service import set_cache, get_cache, delete_cache, enqueue_job, set_job_cache, get_job_cache
+import tasks
 from utils.logger import get_logger
 import requests as py_requests
 
@@ -65,22 +67,41 @@ def get_ai_service(config, user_model=None):
         return GroqService(api_key=api_key)
 
 def load_jobs():
-    """Load jobs from database or fall back to JSON file."""
+    """Load jobs from database or fall back to JSON file, merging with Redis cache."""
+    base_jobs = []
     if database.is_db_available():
-        return database.get_jobs()
+        base_jobs = database.get_jobs()
+    elif os.path.exists(jobs_file):
+        # Fallback to JSON file
+        try:
+            with open(jobs_file, 'r') as f:
+                base_jobs = json.load(f)
+        except Exception:
+            base_jobs = []
     
-    # Fallback to JSON file
-    if os.path.exists(jobs_file):
-        with open(jobs_file, 'r') as f:
-            return json.load(f)
-    return []
+    # Merge with Redis cache for the most up-to-date status
+    for i, job in enumerate(base_jobs):
+        job_id = job.get('id')
+        if job_id:
+            cached_job = get_job_cache(job_id)
+            if cached_job:
+                # Update with cached data while preserving non-cached fields if any
+                base_jobs[i] = {**job, **cached_job}
+                
+    return base_jobs
 
 def save_job(job):
-    """Save job to database or fall back to JSON file."""
+    """Save job to Redis cache (write-through) and then to database or JSON file."""
+    job_id = job.get('id')
+    if job_id:
+        # Step 1: Write to Redis cache first
+        set_job_cache(job_id, job)
+        
+    # Step 2: Write to persistent storage
     if database.is_db_available():
-        existing = database.get_job_by_id(job.get('id'))
+        existing = database.get_job_by_id(job_id)
         if existing:
-            database.update_job(job.get('id'), job)
+            database.update_job(job_id, job)
         else:
             database.insert_job(job)
         return
@@ -548,70 +569,27 @@ def handle_webhook():
     if created_job is None:
         return jsonify({'message': 'Job already in progress or rate limited for this issue'}), 429
     
-
+    # Enqueue the job in Redis Queue
+    is_pr = 'pull_request' in issue or bool(issue.get('pull_request'))
     
-    try:
-        github_service = GitHubService(github_token)
-        ai_service = get_ai_service(config)
-        pr_service = PRService(github_service, ai_service)
-        
-        job['stage'] = 'generating'
-        
-        # Check if it's a pull request
-        is_pr = 'pull_request' in issue or bool(issue.get('pull_request'))
-        
-        if is_pr:
-            job['logs'].append('AI analyzing PR feedback...')
-            save_job(job)
-            
-            result = pr_service.process_pr_comment(
-                repo_full_name=repo_full_name,
-                pr_number=issue_number,
-                comment_body=comment_body,
-                job_id=job['id']
-            )
-        else:
-            job['logs'].append('AI analyzing issue...')
-            save_job(job)
-            
-            result = pr_service.process_issue(
-                repo_full_name=repo_full_name,
-                issue_number=issue_number,
-                issue_title=issue_title,
-                issue_body=issue_body,
-                comment_body=comment_body,
-                job_id=job['id']
-            )
-        
-        job['status'] = 'completed' if result.get('success') else 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['prUrl'] = result.get('pr_url')
-        job['error'] = result.get('message') if not result.get('success') else None
-        job['validationLogs'] = result.get('validation_logs', [])
-        job['stage'] = 'completed' if result.get('success') else 'failed'
-        job['logs'].append(f"Result: {'PR created' if result.get('success') else result.get('message', 'Failed')}")
-        save_job(job)
-        
-        return jsonify(result), 200
-        
-    except ValueError as e:
-        logger.error("webhook_processing_error", error=str(e), stage="value_error")
-        job['status'] = 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['stage'] = 'error'
-        job['error'] = str(e)
-        job['logs'].append(f'Error: {str(e)}')
-        save_job(job)
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        logger.error("webhook_processing_failed", error=str(e), stage="exception")
-        job['status'] = 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['stage'] = 'error'
-        job['error'] = str(e)
-        job['logs'].append(f'Error: {str(e)}')
-        save_job(job)
-        return jsonify({'error': str(e)}), 500
+    enqueue_job(
+        tasks.process_webhook_task,
+        repo_full_name=repo_full_name,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        comment_body=comment_body,
+        is_pr=is_pr,
+        job_id=job_id,
+        github_token=github_token,
+        config=config
+    )
+    
+    return jsonify({
+        'success': True,
+        'message': 'Job enqueued successfully',
+        'job_id': job_id
+    }), 202
 
 @app.route('/api/test-issue', methods=['POST'])
 def test_issue():
@@ -680,63 +658,27 @@ def test_issue():
     }
     save_job(job)
     
-    try:
-        github_service = GitHubService(github_token)
-        ai_service = get_ai_service(config)
-        pr_service = PRService(github_service, ai_service)
-        
-        job['stage'] = 'generating'
-        
-        is_pr = data.get('is_pr', False)
-        
-        if is_pr:
-            job['logs'].append('AI analyzing PR feedback (TEST)...')
-            save_job(job)
-            result = pr_service.process_pr_comment(
-                repo_full_name=repo_full_name,
-                pr_number=issue_number,
-                comment_body=comment_body,
-                job_id=job['id']
-            )
-        else:
-            job['logs'].append('AI analyzing issue...')
-            save_job(job)
-            result = pr_service.process_issue(
-                repo_full_name=repo_full_name,
-                issue_number=issue_number,
-                issue_title=issue_title,
-                issue_body=issue_body,
-                comment_body=comment_body,
-                job_id=job['id']
-            )
-        
-        job['status'] = 'completed' if result.get('success') else 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['prUrl'] = result.get('pr_url')
-        job['error'] = result.get('message') if not result.get('success') else None
-        job['validationLogs'] = result.get('validation_logs', [])
-        job['stage'] = 'completed' if result.get('success') else 'failed'
-        job['logs'].append(f"Result: {'PR created' if result.get('success') else result.get('message', 'Failed')}")
-        save_job(job)
-        
-        return jsonify(result), 200
-        
-    except ValueError as e:
-        job['status'] = 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['stage'] = 'error'
-        job['error'] = str(e)
-        job['logs'].append(f'Error: {str(e)}')
-        save_job(job)
-        return jsonify({'error': str(e)}), 400
-    except Exception as e:
-        job['status'] = 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['stage'] = 'error'
-        job['error'] = str(e)
-        job['logs'].append(f'Error: {str(e)}')
-        save_job(job)
-        return jsonify({'error': str(e)}), 500
+    # Enqueue the job in Redis Queue
+    is_pr = data.get('is_pr', False)
+    
+    enqueue_job(
+        tasks.process_webhook_task,
+        repo_full_name=repo_full_name,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        comment_body=comment_body,
+        is_pr=is_pr,
+        job_id=job['id'],
+        github_token=github_token,
+        config=config
+    )
+    
+    return jsonify({
+        'success': True,
+        'message': 'Test job enqueued successfully',
+        'job_id': job['id']
+    }), 202
 
 
 @app.route('/api/jobs', methods=['GET'])
@@ -790,44 +732,22 @@ def create_manual_job():
     # Save initial job state
     save_job(job)
     
-    # Run in background to avoid checkout/AI timeout
-    def run_task():
-        try:
-            github_service = GitHubService(github_token)
-            ai_service = get_ai_service(config)
-            pr_service = PRService(github_service, ai_service)
-            
-            result = pr_service.process_manual_task(
-                repo_full_name=repo_full_name,
-                prompt=prompt,
-                user_id=user_id,
-                job_id=job_id
-            )
-            
-            job['status'] = 'completed' if result.get('success') else 'failed'
-            job['completedAt'] = datetime.now().isoformat()
-            job['prUrl'] = result.get('pr_url')
-            job['error'] = result.get('message') if not result.get('success') else None
-            job['validationLogs'] = result.get('validation_logs', [])
-            job['stage'] = 'completed' if result.get('success') else 'failed'
-            job['logs'].append(f"Result: {'PR created' if result.get('success') else result.get('message', 'Failed')}")
-            save_job(job)
-            
-        except Exception as e:
-            logger.error("manual_task_failed", error=str(e))
-            job['status'] = 'failed'
-            job['stage'] = 'error'
-            job['error'] = str(e)
-            job['logs'].append(f"Error: {str(e)}")
-            save_job(job)
-
-    executor.submit(run_task)
+    # Enqueue the job in Redis Queue
+    enqueue_job(
+        tasks.process_manual_task,
+        repo_full_name=repo_full_name,
+        prompt=prompt,
+        user_id=user_id,
+        job_id=job_id,
+        github_token=github_token,
+        config=config
+    )
     
     return jsonify({
         'success': True,
-        'message': 'Job started successfully',
+        'message': 'Manual job enqueued successfully',
         'job_id': job_id
-    }), 201
+    }), 202
 
 
 @app.route('/api/repos', methods=['GET'])
@@ -839,10 +759,21 @@ def get_repos():
     if not github_token:
         return jsonify({'error': 'GitHub token not configured'}), 500
     
+    # Try to get from cache
+    cache_key = f"repos_{hashlib.md5(github_token.encode()).hexdigest()}"
+    cached_repos = get_cache(cache_key)
+    if cached_repos:
+        return jsonify(json.loads(cached_repos)), 200
+
     try:
         github_service = GitHubService(github_token)
         repos = github_service.get_available_repos()
-        return jsonify({'repos': repos, 'count': len(repos)}), 200
+        response_data = {'repos': repos, 'count': len(repos)}
+        
+        # Cache for 10 minutes
+        set_cache(cache_key, json.dumps(response_data), expire=600)
+        
+        return jsonify(response_data), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -1436,40 +1367,25 @@ def handle_issue_comment_from_app(data, action):
     if created_job is None:
         return jsonify({'message': 'Job already in progress or rate limited'}), 429
     
-
+    # Enqueue the job in Redis Queue
+    enqueue_job(
+        tasks.process_webhook_task,
+        repo_full_name=repo_full_name,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        comment_body=comment_body,
+        is_pr='pull_request' in issue or bool(issue.get('pull_request')),
+        job_id=job['id'],
+        github_token=github_token,
+        config=load_config()
+    )
     
-    try:
-        github_service = GitHubService(github_token)
-        ai_service = GroqService(api_key=groq_key)
-        pr_service = PRService(github_service, ai_service)
-        
-        job['stage'] = 'generating'
-        job['logs'].append('AI analyzing issue...')
-        save_job(job)
-        
-        result = pr_service.process_issue(
-            repo_full_name=repo_full_name,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            issue_body=issue_body,
-            comment_body=comment_body
-        )
-        
-        job['status'] = 'completed' if result.get('success') else 'failed'
-        job['completedAt'] = datetime.now().isoformat()
-        job['prUrl'] = result.get('pr_url')
-        job['error'] = result.get('message') if not result.get('success') else None
-        job['stage'] = 'completed' if result.get('success') else 'failed'
-        save_job(job)
-        
-        return jsonify(result), 200
-        
-    except Exception as e:
-        job['status'] = 'failed'
-        job['error'] = str(e)
-        job['stage'] = 'error'
-        save_job(job)
-        return jsonify({'error': str(e)}), 500
+    return jsonify({
+        'success': True,
+        'message': 'Job enqueued successfully',
+        'job_id': job['id']
+    }), 202
 
 
 # =====================
