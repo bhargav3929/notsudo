@@ -23,7 +23,7 @@ class PRService:
             except Exception as e:
                 logger.warning("code_execution_unavailable", error=str(e))
     
-    def process_issue(self, repo_full_name, issue_number, issue_title, issue_body, comment_body):
+    def process_issue(self, repo_full_name, issue_number, issue_title, issue_body, comment_body, job_id=None):
         logger.info(
             "processing_issue",
             repo=repo_full_name,
@@ -68,18 +68,70 @@ class PRService:
             comment_body=comment_body,
             codebase_files=codebase_files,
             repo_url=repo.clone_url,
-            code_execution_service=self.code_execution
+            code_execution_service=self.code_execution,
+            job_id=job_id
         )
         
+        return self._execute_ai_task(
+            repo=repo,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            issue_body=issue_body,
+            ai_result=ai_result,
+            job_id=job_id
+        )
+
+    def process_manual_task(self, repo_full_name, prompt, user_id=None, job_id=None):
+        logger.info(
+            "processing_manual_task",
+            repo=repo_full_name,
+            prompt_preview=prompt[:100]
+        )
+        
+        try:
+            repo = self.github_service.get_repository(repo_full_name)
+        except ValueError as e:
+            logger.error("repository_fetch_failed", repo=repo_full_name, error=str(e))
+            return {'success': False, 'message': str(e)}
+            
+        logger.info("fetching_codebase_files", repo=repo_full_name)
+        codebase_files = self.github_service.get_relevant_files(repo, max_files=15)
+        
+        if not codebase_files:
+            return {'success': False, 'message': 'Could not fetch codebase files'}
+            
+        logger.info("analyzing_with_ai", job_id=job_id)
+        ai_result = self.ai_service.analyze_issue_and_plan_changes(
+            issue_title="Manual Task",
+            issue_body=prompt,
+            comment_body=prompt,
+            codebase_files=codebase_files,
+            repo_url=repo.clone_url,
+            code_execution_service=self.code_execution,
+            job_id=job_id
+        )
+        
+        return self._execute_ai_task(
+            repo=repo,
+            issue_number=None,
+            issue_title=prompt[:100],  # Use prompt as title
+            issue_body=prompt,
+            ai_result=ai_result,
+            job_id=job_id
+        )
+
+    def _execute_ai_task(self, repo, issue_number, issue_title, issue_body, ai_result, job_id=None):
+        """Shared logic for creating branches, validating, and creating PRs."""
         file_changes = ai_result.get('file_changes', [])
         
         if not file_changes:
             logger.warning("no_file_changes_suggested", issue_number=issue_number)
-            self.github_service.add_issue_comment(
-                repo, 
-                issue_number, 
-                f"ℹ️ **Analysis Complete**\n\nI analyzed the issue but couldn't determine any necessary code changes.\n\n**Analysis:**\n{ai_result.get('analysis')}"
-            )
+            if issue_number:
+                self.github_service.add_issue_comment(
+                    repo, 
+                    issue_number, 
+                    f"ℹ️ **Analysis Complete**\n\nI analyzed the issue but couldn't determine any necessary code changes.\n\n**Analysis:**\n{ai_result.get('analysis')}"
+                )
             return {
                 'success': False,
                 'message': 'AI did not suggest any file changes',
@@ -110,18 +162,11 @@ class PRService:
         
         if not branch_result.get('success'):
             logger.error("branch_creation_failed", branch=branch_name, error=branch_result.get('error'))
-            self.github_service.add_issue_comment(repo, issue_number, "❌ **Failed to create branch**\n\nI encountered an error while trying to create a new branch.")
+            if issue_number:
+                self.github_service.add_issue_comment(repo, issue_number, "❌ **Failed to create branch**\n\nI encountered an error while trying to create a new branch.")
             return {
                 'success': False,
                 'message': 'Failed to create branch'
-            }
-        
-        # If branch already existed (another process is handling this issue), abort gracefully
-        if branch_result.get('already_exists'):
-            logger.info("branch_already_exists_abort", branch=branch_name)
-            return {
-                'success': False,
-                'message': 'Branch already exists - another process is handling this issue'
             }
         
         # Validate changes in sandbox with retry loop
@@ -130,6 +175,7 @@ class PRService:
             repo=repo,
             branch_name=branch_name,
             file_changes=file_changes,
+            job_id=job_id
         )
         
         if not validation_result['success']:
@@ -142,11 +188,12 @@ class PRService:
             # Cleanup branch on failure
             self.github_service.delete_branch(repo, branch_name)
             
-            self.github_service.add_issue_comment(
-                repo, 
-                issue_number, 
-                f"❌ **Validation Failed**\n\nI attempted to fix the issue but the changes failed validation (tests/linting).\n\n**Error:**\n{validation_result.get('error')}"
-            )
+            if issue_number:
+                self.github_service.add_issue_comment(
+                    repo, 
+                    issue_number, 
+                    f"❌ **Validation Failed**\n\nI attempted to fix the issue but the changes failed validation (tests/linting).\n\n**Error:**\n{validation_result.get('error')}"
+                )
             
             return {
                 'success': False,
@@ -189,7 +236,8 @@ class PRService:
             logger.error("no_changes_applied")
             # Cleanup branch
             self.github_service.delete_branch(repo, branch_name)
-            self.github_service.add_issue_comment(repo, issue_number, "❌ **Failed to apply changes**\n\nI generated a plan but failed to apply the file changes to the repository.")
+            if issue_number:
+                self.github_service.add_issue_comment(repo, issue_number, "❌ **Failed to apply changes**\n\nI generated a plan but failed to apply the file changes to the repository.")
             return {
                 'success': False,
                 'message': 'Failed to apply any changes'
@@ -198,7 +246,9 @@ class PRService:
         logger.info("changes_applied", count=len(changes_applied))
         
         pr_title = f"AI Fix: {issue_title}"
-        pr_body = f"""This PR was automatically generated in response to issue #{issue_number}.
+        prefix = f"This PR was automatically generated in response to issue #{issue_number}." if issue_number else "This PR was automatically generated from a manual task."
+        
+        pr_body = f"""{prefix}
 
 ## Changes Made:
 {chr(10).join([f"- **{change['file']}**: {change['reason']}" for change in changes_applied])}
@@ -226,15 +276,16 @@ Generated by @notsudo AI automation"""
                 pr_number=pr_result.get('pr_number'),
                 pr_url=pr_result.get('pr_url')
             )
-            self.github_service.add_issue_comment(
-                repo, 
-                issue_number, 
-                f"✅ **PR Created!**\n\nI've created a pull request to address this issue:\n→ [PR #{pr_result.get('pr_number')}: {pr_title}]({pr_result.get('pr_url')})\n\nPlease review the changes and merge if they look good."
-            )
+            if issue_number:
+                self.github_service.add_issue_comment(
+                    repo, 
+                    issue_number, 
+                    f"✅ **PR Created!**\n\nI've created a pull request to address this issue:\n→ [PR #{pr_result.get('pr_number')}: {pr_title}]({pr_result.get('pr_url')})\n\nPlease review the changes and merge if they look good."
+                )
         else:
             logger.error("pull_request_creation_failed", error=pr_result.get('error'))
-            # Cleanup branch? Maybe keep it if changes were valid but PR creation failed (e.g. rate limit)
-            self.github_service.add_issue_comment(repo, issue_number, f"⚠️ **PR Creation Failed**\n\nThe changes were validated and the branch `{branch_name}` was created, but I failed to create the Pull Request object.\nError: {pr_result.get('error')}")
+            if issue_number:
+                self.github_service.add_issue_comment(repo, issue_number, f"⚠️ **PR Creation Failed**\n\nThe changes were validated and the branch `{branch_name}` was created, but I failed to create the Pull Request object.\nError: {pr_result.get('error')}")
         
         return {
             'success': pr_result.get('success'),
@@ -245,7 +296,7 @@ Generated by @notsudo AI automation"""
             'validation_logs': validation_result.get('logs', [])
         }
     
-    def process_pr_comment(self, repo_full_name, pr_number, comment_body):
+    def process_pr_comment(self, repo_full_name, pr_number, comment_body, job_id=None):
         logger.info(
             "processing_pr_comment",
             repo=repo_full_name,
@@ -304,7 +355,9 @@ Generated by @notsudo AI automation"""
                 pr_title=pr.title,
                 pr_body=pr.body,
                 comment_body=comment_body,
-                codebase_files=codebase_files
+
+                codebase_files=codebase_files,
+                job_id=job_id
             )
         except Exception as e:
             logger.error("ai_analysis_failed", error=str(e))
@@ -331,7 +384,9 @@ Generated by @notsudo AI automation"""
         validation_result = self._validate_with_retries(
             repo=repo,
             branch_name=branch_name,
-            file_changes=file_changes
+
+            file_changes=file_changes,
+            job_id=job_id
         )
         
         if not validation_result['success']:
@@ -385,7 +440,7 @@ Generated by @notsudo AI automation"""
                 'message': 'Failed to apply changes to GitHub'
             }
 
-    def _validate_with_retries(self, repo, branch_name, file_changes):
+    def _validate_with_retries(self, repo, branch_name, file_changes, job_id=None):
         """
         Validate changes in sandbox, retrying with AI fixes if tests fail.
         """
@@ -456,9 +511,11 @@ Generated by @notsudo AI automation"""
                 error_context = "\n".join(result.logs[-50:])  # Last 50 log lines for better root cause analysis
                 
                 try:
+
                     current_changes = self.ai_service.fix_test_failures(
                         original_changes=current_changes,
-                        error_logs=error_context
+                        error_logs=error_context,
+                        job_id=job_id
                     )
                     logger.info("ai_fix_received", file_count=len(current_changes))
                     all_logs.append(f"AI suggested fixes for {len(current_changes)} files")

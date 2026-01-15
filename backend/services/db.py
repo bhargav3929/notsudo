@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from sqlalchemy import create_engine, func, text
 from sqlalchemy.orm import sessionmaker, Session
 
-from services.models import Base, User, Repository, Job, Issue
+from services.models import Base, User, Repository, Job, Issue, JobLog, Subscription
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -303,6 +303,68 @@ def job_to_dict(job: Job) -> Dict[str, Any]:
 
 
 # ======================
+# Job Logs CRUD
+# ======================
+
+def insert_job_log(log_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Insert a new job log entry."""
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return None
+            
+            import uuid
+            log_id = str(uuid.uuid4())
+            
+            log = JobLog(
+                id=log_id,
+                job_id=log_data.get('jobId') or log_data.get('job_id'),
+                role=log_data.get('role'),
+                type=log_data.get('type'),
+                content=log_data.get('content'),
+                metadata_=log_data.get('metadata', {}),
+                created_at=datetime.utcnow()
+            )
+            session.add(log)
+            session.flush()
+            # logger.debug("job_log_inserted", log_id=log.id, type=log.type)
+            return job_log_to_dict(log)
+    except Exception as e:
+        logger.error("insert_job_log_failed", error=str(e))
+        return None
+
+
+def get_job_logs(job_id: str) -> List[Dict[str, Any]]:
+    """Get logs for a specific job."""
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return []
+            
+            logs = session.query(JobLog).filter(
+                JobLog.job_id == job_id
+            ).order_by(JobLog.created_at.asc()).all()
+            
+            return [job_log_to_dict(log) for log in logs]
+    except Exception as e:
+        logger.error("get_job_logs_failed", error=str(e))
+        return []
+
+
+def job_log_to_dict(log: JobLog) -> Dict[str, Any]:
+    """Convert JobLog model to dictionary."""
+    return {
+        'id': log.id,
+        'jobId': log.job_id,
+        'role': log.role,
+        'type': log.type,
+        'content': log.content,
+        'metadata': log.metadata_,
+        'createdAt': log.created_at.isoformat() if log.created_at else None,
+    }
+
+
+# ======================
 # Repositories CRUD
 # ======================
 
@@ -555,4 +617,101 @@ def update_user_ai_settings(user_id: str, selected_model: Optional[str] = None, 
     except Exception as e:
         logger.error("update_user_ai_settings_failed", error=str(e), user_id=user_id)
         return None
+        
+# ======================
+# Subscriptions CRUD
+# ======================
+
+def insert_subscription(sub_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Insert or update a subscription."""
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return None
+            
+            sub_id = sub_data.get('id')
+            existing = session.query(Subscription).filter(Subscription.id == sub_id).first()
+            
+            if existing:
+                # Update
+                for key, value in sub_data.items():
+                    if hasattr(existing, key) and key != 'id':
+                        setattr(existing, key, value)
+                existing.updated_at = datetime.utcnow()
+                sub = existing
+            else:
+                # Insert
+                sub = Subscription(
+                    id=sub_id,
+                    user_id=sub_data.get('user_id'),
+                    plan=sub_data.get('plan'),
+                    status=sub_data.get('status'),
+                    quantity=sub_data.get('quantity', 1),
+                    next_billing_date=sub_data.get('next_billing_date')
+                )
+                session.add(sub)
+            
+            session.flush()
+            logger.info("subscription_saved", sub_id=sub_id, status=sub.status)
+            return subscription_to_dict(sub)
+    except Exception as e:
+        logger.error("insert_subscription_failed", error=str(e))
+        return None
+
+def get_user_subscription(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get active subscription for a user."""
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return None
+            sub = session.query(Subscription).filter(
+                Subscription.user_id == user_id
+            ).order_by(Subscription.created_at.desc()).first()
+            return subscription_to_dict(sub) if sub else None
+    except Exception as e:
+        logger.error("get_user_subscription_failed", error=str(e), user_id=user_id)
+        return None
+
+def subscription_to_dict(sub: Subscription) -> Dict[str, Any]:
+    """Convert Subscription model to dictionary."""
+    return {
+        'id': sub.id,
+        'userId': sub.user_id,
+        'plan': sub.plan,
+        'status': sub.status,
+        'quantity': sub.quantity,
+        'nextBillingDate': sub.next_billing_date.isoformat() if sub.next_billing_date else None,
+        'createdAt': sub.created_at.isoformat() if sub.created_at else None,
+        'updatedAt': sub.updated_at.isoformat() if sub.updated_at else None,
+    }
+
+def delete_user_data(user_id: str) -> bool:
+    """
+    Delete a user and all related data (subscriptions, jobs, logs, repositories, etc.).
+    Uses cascaded deletes where configured, manual delete for others.
+    """
+    try:
+        with get_db_session() as session:
+            if session is None:
+                return False
+                
+            # 1. Delete Issues associated with this user
+            session.query(Issue).filter(Issue.user_id == user_id).delete()
+            
+            # 2. Delete Jobs associated with this user (JobLogs will be deleted by cascade)
+            session.query(Job).filter(Job.user_id == user_id).delete()
+            
+            # 3. Delete the User (Cascades: Session, Account, Repository, Subscription, GitHubAppInstallation)
+            user = session.query(User).filter(User.id == user_id).first()
+            if user:
+                session.delete(user)
+                session.commit()
+                logger.info("user_deleted", user_id=user_id)
+                return True
+            else:
+                logger.warning("user_not_found_for_deletion", user_id=user_id)
+                return False
+    except Exception as e:
+        logger.error("delete_user_data_failed", error=str(e), user_id=user_id)
+        return False
 

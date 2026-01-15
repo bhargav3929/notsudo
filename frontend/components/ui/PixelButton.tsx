@@ -7,6 +7,8 @@ interface PixelButtonProps {
   variant?: "orange" | "green" | "gray";
   size?: "sm" | "md" | "lg";
   className?: string;
+  disabled?: boolean;
+  type?: "button" | "submit" | "reset";
 }
 
 export function PixelButton({ 
@@ -15,7 +17,9 @@ export function PixelButton({
   onClick,
   variant = "orange",
   size = "md",
-  className = ""
+  className = "",
+  disabled = false,
+  type = "button"
 }: PixelButtonProps) {
   const variants = {
     orange: {
@@ -49,15 +53,9 @@ export function PixelButton({
 
   const content = (
     <>
-      {/* Bottom shadow layer (darkest) */}
       <div className={`absolute inset-0 ${v.shadow} translate-y-2 rounded-sm`} />
-      
-      {/* Main button body */}
       <div className={`relative ${v.body} ${s} rounded-sm border-2`}>
-        {/* Inner highlight (top) */}
         <div className={`absolute inset-x-1 top-1 h-1 ${v.highlight} rounded-sm`} />
-        
-        {/* Text */}
         <span className={`relative ${v.text} font-bold font-retro-body uppercase tracking-wider`}>
           {children}
         </span>
@@ -68,8 +66,8 @@ export function PixelButton({
   if (href) {
     return (
       <a
-        href={href}
-        className={`relative inline-block text-center transition-all active:translate-y-1 hover:brightness-110 ${className}`}
+        href={disabled ? undefined : href}
+        className={`relative inline-block text-center transition-all ${disabled ? "opacity-50 cursor-not-allowed grayscale" : "active:translate-y-1 hover:brightness-110"} ${className}`}
       >
         {content}
       </a>
@@ -78,8 +76,10 @@ export function PixelButton({
 
   return (
     <button
+      type={type}
       onClick={onClick}
-      className={`relative inline-block text-center transition-all active:translate-y-1 hover:brightness-110 ${className}`}
+      disabled={disabled}
+      className={`relative inline-block text-center transition-all ${disabled ? "opacity-50 cursor-not-allowed grayscale" : "active:translate-y-1 hover:brightness-110"} ${className}`}
     >
       {content}
     </button>

@@ -13,6 +13,7 @@ class StackConfig:
     typecheck_command: Optional[str] = None
     dockerfile_path: Optional[str] = None
     docker_compose_path: Optional[str] = None
+    project_root: str = ""
 
 
 STACK_CONFIGS = {
@@ -90,7 +91,6 @@ class StackDetectorService:
 
     def detect_from_file_list(self, file_paths: list[str]) -> Optional[StackConfig]:
         filenames = {path.split('/')[-1] for path in file_paths}
-        path_map = {path.split('/')[-1]: path for path in file_paths}
         
         # Detect base stack config
         stack_config = self._detect_stack(filenames)
@@ -100,9 +100,11 @@ class StackDetectorService:
         # Detect Docker configuration and enhance the config
         dockerfile_path = self._find_dockerfile(file_paths)
         compose_path = self._find_docker_compose(file_paths)
+        project_root = self._detect_project_root(file_paths, stack_config)
+        project_filenames = self._filenames_for_project_root(file_paths, project_root)
         
         # Detect type checking configuration
-        typecheck_command = self._detect_typecheck_config(filenames, stack_config)
+        typecheck_command = self._detect_typecheck_config(project_filenames, stack_config)
         
         # Return new config with enhancements if any
         from dataclasses import replace
@@ -110,8 +112,48 @@ class StackDetectorService:
             stack_config,
             dockerfile_path=dockerfile_path,
             docker_compose_path=compose_path,
-            typecheck_command=typecheck_command
+            typecheck_command=typecheck_command,
+            project_root=project_root
         )
+
+    def _detect_project_root(self, file_paths: list[str], stack_config: StackConfig) -> str:
+        """Pick the best project root for the detected stack."""
+        if stack_config.stack_type == 'nodejs':
+            return self._pick_marker_root(file_paths, ['package.json'])
+        
+        if stack_config.stack_type == 'python':
+            if stack_config.package_manager == 'poetry':
+                return self._pick_marker_root(file_paths, ['pyproject.toml'])
+            return self._pick_marker_root(file_paths, ['requirements.txt', 'setup.py', 'pyproject.toml'])
+        
+        return ""
+
+    def _pick_marker_root(self, file_paths: list[str], markers: list[str]) -> str:
+        """Find the shallowest marker path and return its directory."""
+        for marker in markers:
+            marker_paths = [path for path in file_paths if path.split('/')[-1] == marker]
+            if marker_paths:
+                return self._pick_shallowest_dir(marker_paths)
+        return ""
+
+    def _pick_shallowest_dir(self, paths: list[str]) -> str:
+        """Return the directory of the shallowest path (closest to repo root)."""
+        best_path = min(paths, key=lambda path: (path.count('/'), path))
+        if '/' in best_path:
+            return best_path.rsplit('/', 1)[0]
+        return ""
+
+    def _filenames_for_project_root(self, file_paths: list[str], project_root: str) -> set[str]:
+        """Return filenames scoped to the project root (includes subdirectories)."""
+        if not project_root:
+            return {path.split('/')[-1] for path in file_paths}
+        
+        prefix = project_root.rstrip('/') + '/'
+        return {
+            path.split('/')[-1]
+            for path in file_paths
+            if path.startswith(prefix)
+        }
     
     def _detect_typecheck_config(self, filenames: set[str], stack_config: StackConfig) -> Optional[str]:
         """Detect type checking configuration and return appropriate command."""
@@ -192,4 +234,3 @@ class StackDetectorService:
         structure = github_service.get_directory_structure(repo, path='', ref='main')
         file_paths = [item['path'] for item in structure if item['type'] == 'file']
         return self.detect_from_file_list(file_paths)
-

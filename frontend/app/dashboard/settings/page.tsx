@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Sidebar } from "@/components/dashboard/Sidebar";
-import { Github, Check, AlertCircle, LogOut, Bot, Save, Loader2 } from "lucide-react";
+import { Github, Check, AlertCircle, LogOut, Bot, Save, Loader2, ArrowLeft, User, MessageSquare, Trash2, Settings as SettingsIcon, ChevronDown } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -24,6 +25,8 @@ export default function SettingsPage() {
   const [loadingSettings, setLoadingSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const router = useRouter();
 
   // Fetch available models
   useEffect(() => {
@@ -101,81 +104,103 @@ export default function SettingsPage() {
     await authClient.signOut();
   };
 
-  return (
-    <div className="min-h-screen bg-black">
-      <Sidebar />
+  const handleDeleteAccount = async () => {
+    if (!session?.user?.id) return;
+    
+    const confirmed = window.confirm(
+      "Are you absolutely sure? This will permanently delete your account, all subscriptions, repositories, and job history. This action cannot be undone."
+    );
+    
+    if (!confirmed) return;
+    
+    setDeletingAccount(true);
+    try {
+      const res = await fetch(`${API_URL}/api/user/delete?user_id=${session.user.id}`, {
+        method: "DELETE",
+      });
       
-      {/* Main Content */}
-      <main className="ml-64 min-h-screen">
-        {/* Header */}
-        <header className="h-16 border-b border-white/10 flex items-center px-8">
-          <h1 className="font-mono text-xl font-bold text-white">Settings</h1>
-        </header>
+      if (res.ok) {
+        await authClient.signOut();
+        router.push("/");
+      } else {
+        const error = await res.json();
+        alert(error.error || "Failed to delete account");
+      }
+    } catch (error) {
+      console.error("Failed to delete account:", error);
+      alert("An error occurred while deleting your account");
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
 
-        <div className="p-8 space-y-6">
-          <div className="max-w-2xl space-y-6">
+  return (
+    <div className="min-h-screen bg-[#020202] text-zinc-100 font-modern selection:bg-orange-500/30">
+      {/* Main Content */}
+      <main className="max-w-4xl mx-auto py-16 px-6">
+        <div className="p-8 space-y-12">
+          <div className="max-w-2xl space-y-12">
             {/* GitHub Connection */}
-            <div className="border border-white/10 rounded-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-white/10">
-                <h2 className="font-mono text-white font-medium">GitHub Connection</h2>
-                <p className="font-mono text-xs text-gray-500 mt-1">
+            <div className="modern-card overflow-hidden">
+              <div className="px-8 py-6 border-b border-zinc-800/50">
+                <h2 className="text-lg font-bold text-white tracking-tight">GitHub Connection</h2>
+                <p className="text-sm text-zinc-500 mt-1 font-medium">
                   Connect your GitHub account to enable automated code reviews
                 </p>
               </div>
-              <div className="p-6">
+              <div className="p-8">
                 {isConnected ? (
-                  <div className="flex flex-col gap-4">
-                    <div className="flex items-center gap-4">
+                  <div className="flex flex-col gap-6">
+                    <div className="flex items-center gap-5">
                       {session?.user?.image ? (
-                        // eslint-disable-next-line @next/next/no-img-element
                         <img
                           src={session.user.image}
                           alt={session.user.name || "User"}
-                          className="w-12 h-12 rounded-full border border-white/10"
+                          className="w-14 h-14 rounded-2xl border border-zinc-800 overflow-hidden"
                         />
                       ) : (
-                        <div className="w-12 h-12 rounded-full bg-green-500/20 border border-green-500/30 flex items-center justify-center">
-                          <Check className="w-6 h-6 text-green-500" />
+                        <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                          <Check className="w-7 h-7 text-emerald-500" />
                         </div>
                       )}
                       <div>
-                        <p className="font-mono text-sm text-white">
+                        <p className="font-bold text-zinc-100">
                           Connected as {session?.user?.name || "User"}
                         </p>
-                        <p className="font-mono text-xs text-gray-500">
+                        <p className="text-sm text-zinc-500 font-medium">
                            {session?.user?.email}
                         </p>
                       </div>
                     </div>
 
-                    <div className="mt-2 p-3 bg-white/5 rounded border border-white/10">
-                        <p className="font-mono text-xs text-gray-400 mb-2">Granted Scopes:</p>
+                    <div className="p-4 bg-zinc-900/50 rounded-xl border border-zinc-800/50">
+                        <p className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-3">Granted Scopes</p>
                         <div className="flex flex-wrap gap-2">
-                            <span className="px-2 py-1 bg-green-500/10 text-green-400 text-xs font-mono rounded border border-green-500/20">repo</span>
-                            <span className="px-2 py-1 bg-green-500/10 text-green-400 text-xs font-mono rounded border border-green-500/20">user</span>
-                            <span className="px-2 py-1 bg-green-500/10 text-green-400 text-xs font-mono rounded border border-green-500/20">read:org</span>
+                            <span className="px-2 py-1 bg-emerald-500/10 text-emerald-500 text-[10px] font-bold rounded border border-emerald-500/20">REPO</span>
+                            <span className="px-2 py-1 bg-emerald-500/10 text-emerald-500 text-[10px] font-bold rounded border border-emerald-500/20">USER</span>
+                            <span className="px-2 py-1 bg-emerald-500/10 text-emerald-500 text-[10px] font-bold rounded border border-emerald-500/20">READ:ORG</span>
                         </div>
                     </div>
 
                     <button
                         onClick={handleDisconnect}
-                        className="inline-flex items-center gap-2 px-4 py-2 mt-2 bg-red-500/10 text-red-400 font-mono text-xs font-medium hover:bg-red-500/20 transition-colors rounded border border-red-500/20 w-fit"
+                        className="flex items-center gap-2 px-4 py-2 bg-red-500/10 text-red-500 text-xs font-bold hover:bg-red-500/20 transition-all rounded-lg border border-red-500/20 w-fit"
                     >
                         <LogOut className="w-4 h-4" />
-                        Disconnect
+                        Disconnect Account
                     </button>
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    <div className="flex items-start gap-3 p-4 bg-orange-500/5 border border-orange-500/20 rounded-lg">
-                      <AlertCircle className="w-5 h-5 text-orange-500 flex-shrink-0 mt-0.5" />
-                      <p className="font-mono text-sm text-gray-400">
+                  <div className="space-y-6">
+                    <div className="flex items-start gap-4 p-5 bg-orange-500/5 border border-orange-500/10 rounded-xl">
+                      <AlertCircle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+                      <p className="text-sm text-zinc-400 font-medium leading-relaxed">
                         Connect your GitHub account to allow NotSudo to analyze your repositories and create pull requests.
                       </p>
                     </div>
                     <button
                       onClick={handleConnectGithub}
-                      className="inline-flex items-center gap-3 px-6 py-3 bg-white text-black font-mono text-sm font-medium hover:bg-gray-100 transition-colors rounded-lg"
+                      className="flex items-center gap-3 px-8 py-3 bg-white text-black font-bold text-sm hover:bg-zinc-200 transition-all rounded-xl active:scale-95"
                     >
                       <Github className="w-5 h-5" />
                       Connect to GitHub
@@ -186,85 +211,118 @@ export default function SettingsPage() {
             </div>
 
             {/* AI Settings */}
-            <div className="border border-white/10 rounded-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-white/10">
-                <div className="flex items-center gap-2">
-                  <Bot className="w-5 h-5 text-amber-500" />
-                  <h2 className="font-mono text-white font-medium">AI Settings</h2>
+            <div className="modern-card overflow-hidden">
+              <div className="px-8 py-6 border-b border-zinc-800/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-orange-600/10 flex items-center justify-center border border-orange-600/20">
+                    <Bot className="w-5 h-5 text-orange-500" />
+                  </div>
+                  <h2 className="text-lg font-bold text-white tracking-tight">AI Agent Configuration</h2>
                 </div>
-                <p className="font-mono text-xs text-gray-500 mt-1">
-                  Configure which AI model to use and add custom rules for code generation
+                <p className="text-sm text-zinc-500 mt-1 font-medium">
+                  Set your preferred model and define custom instructions for code generation
                 </p>
               </div>
-              <div className="p-6 space-y-6">
+              <div className="p-8 space-y-8">
                 {loadingSettings ? (
-                  <div className="flex items-center gap-2 text-gray-500">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span className="font-mono text-sm">Loading settings...</span>
+                  <div className="flex items-center gap-3 text-zinc-500 font-medium py-10">
+                    <Loader2 className="w-5 h-5 animate-spin text-orange-500" />
+                    <span>Pulling agent configuration...</span>
                   </div>
                 ) : (
                   <>
-                    {/* Model Selection */}
-                    <div className="space-y-2">
-                      <label className="font-mono text-xs text-gray-400 uppercase tracking-wider">
-                        AI Model
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">
+                        Intelligence Model
                       </label>
-                      <select
-                        value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 font-mono text-sm text-white focus:outline-none focus:border-amber-500/50 transition-colors"
-                      >
-                        {models.map((model) => (
-                          <option key={model.id} value={model.id} className="bg-black">
-                            {model.name} ({model.provider})
-                          </option>
-                        ))}
-                      </select>
-                      <p className="font-mono text-xs text-gray-500">
-                        Select the AI model to use for code analysis and generation
-                      </p>
+                      <div className="relative">
+                        <select
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value)}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3.5 text-sm text-white focus:outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/10 transition-all appearance-none cursor-pointer"
+                        >
+                          {models.map((model) => (
+                            <option key={model.id} value={model.id} className="bg-zinc-900">
+                              {model.name} ({model.provider})
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="absolute right-4 top-4 w-4 h-4 text-zinc-600 pointer-events-none" />
+                      </div>
                     </div>
 
-                    {/* Custom Rules */}
-                    <div className="space-y-2">
-                      <label className="font-mono text-xs text-gray-400 uppercase tracking-wider">
-                        Custom Rules
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">
+                        Instruction Manual (Custom Rules)
                       </label>
                       <textarea
                         value={customRules}
                         onChange={(e) => setCustomRules(e.target.value)}
                         placeholder="Add custom instructions for the AI, e.g.:&#10;- Always use TypeScript&#10;- Follow eslint rules&#10;- Add JSDoc comments"
-                        rows={5}
-                        className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 font-mono text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500/50 transition-colors resize-none"
+                        rows={6}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-4 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-orange-500 focus:ring-4 focus:ring-orange-500/10 transition-all font-mono modern-scrollbar resize-none"
                       />
-                      <p className="font-mono text-xs text-gray-500">
-                        These rules will be included in every AI prompt for code generation
-                      </p>
                     </div>
 
-                    {/* Save Button */}
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-6 pt-4">
                       <button
                         onClick={handleSaveSettings}
                         disabled={savingSettings}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 text-black font-mono text-sm font-medium hover:bg-amber-400 transition-colors rounded-lg disabled:opacity-50"
+                        className="flex items-center gap-2 px-8 py-3 bg-orange-600 hover:bg-orange-700 text-white font-bold text-sm rounded-xl transition-all active:scale-95 disabled:opacity-50"
                       >
                         {savingSettings ? (
                           <Loader2 className="w-4 h-4 animate-spin" />
                         ) : (
                           <Save className="w-4 h-4" />
                         )}
-                        {savingSettings ? "Saving..." : "Save Settings"}
+                        Sync Changes
                       </button>
                       {saveSuccess && (
-                        <span className="font-mono text-xs text-green-400 flex items-center gap-1">
+                        <div className="flex items-center gap-2 text-emerald-500 font-bold text-xs uppercase tracking-tight animate-in fade-in slide-in-from-left-2">
                           <Check className="w-4 h-4" />
-                          Settings saved!
-                        </span>
+                          Configuration Updated
+                        </div>
                       )}
                     </div>
                   </>
                 )}
+              </div>
+            </div>
+
+            {/* Danger Zone */}
+            <div className="modern-card border-red-500/20 overflow-hidden">
+              <div className="px-8 py-6 border-b border-red-500/10 bg-red-500/[0.02]">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center border border-red-500/20">
+                    <Trash2 className="w-5 h-5 text-red-500" />
+                  </div>
+                  <h2 className="text-lg font-bold text-white tracking-tight">Danger Zone</h2>
+                </div>
+                <p className="text-sm text-zinc-500 mt-1 font-medium">
+                  Irreversible actions for your account and data
+                </p>
+              </div>
+              <div className="p-8">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 p-6 bg-red-500/5 border border-red-500/10 rounded-2xl">
+                  <div className="space-y-1">
+                    <h3 className="text-sm font-bold text-zinc-100">Delete Account</h3>
+                    <p className="text-xs text-zinc-500 font-medium leading-relaxed max-w-md">
+                      Permanently remove your account, subscriptions, and all associated data from our servers.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleDeleteAccount}
+                    disabled={deletingAccount}
+                    className="flex items-center justify-center gap-2 px-6 py-3 bg-red-500 hover:bg-red-600 text-white font-bold text-sm rounded-xl transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {deletingAccount ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                    Delete Permanently
+                  </button>
+                </div>
               </div>
             </div>
           </div>

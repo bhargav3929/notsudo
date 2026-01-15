@@ -1,7 +1,13 @@
 import type { Metadata } from "next"
-import { Press_Start_2P, VT323 } from "next/font/google"
+import { Press_Start_2P, VT323, Inter } from "next/font/google"
 import "./globals.css"
 import { Analytics } from "@vercel/analytics/react"
+
+// Modern font
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-modern"
+})
 
 // Retro pixel font for headings and accents
 const pressStart2P = Press_Start_2P({ 
@@ -29,7 +35,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${pressStart2P.variable} ${vt323.variable}`}>{children}<Analytics /></body>
+      <body className={`${inter.variable} ${pressStart2P.variable} ${vt323.variable} font-sans`}>{children}<Analytics /></body>
     </html>
   )
 }

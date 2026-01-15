@@ -2,10 +2,10 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Sidebar } from "@/components/dashboard/Sidebar";
 import { RepositoriesGrid } from "@/components/dashboard/RepositoriesGrid";
 import { useSession } from "@/lib/auth-client";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, ArrowLeft, ChevronDown, Trash2, MessageSquare, Settings, User } from "lucide-react";
+import Link from "next/link";
 
 interface Repository {
   id: string;
@@ -45,92 +45,51 @@ export default function RepositoriesPage() {
     }
   }, [session?.user?.id]);
 
-  // Initial fetch
   useEffect(() => {
     if (session?.user?.id) {
       fetchRepositories();
     }
   }, [session?.user?.id, fetchRepositories]);
 
-  // Polling every 30 seconds
   useEffect(() => {
     if (!session?.user?.id) return;
-
     const interval = setInterval(() => {
       fetchRepositories();
     }, 30000);
-
     return () => clearInterval(interval);
   }, [session?.user?.id, fetchRepositories]);
 
-  // Redirect to login if not authenticated
   useEffect(() => {
     if (!isPending && !session) {
       router.push("/login");
     }
   }, [session, isPending, router]);
 
-  // Show loading while checking auth
   if (isPending) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="flex items-center gap-3 text-gray-500">
-          <div className="w-6 h-6 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
-          <span className="font-mono text-sm">Loading...</span>
+      <div className="min-h-screen bg-[#020202] flex items-center justify-center">
+        <div className="animate-pulse flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
         </div>
       </div>
     );
   }
 
-  // Don't render if not authenticated (will redirect)
-  if (!session) {
-    return null;
-  }
+  if (!session) return null;
 
   const handleConnectRepo = () => {
     router.push("/dashboard/settings");
   };
 
   return (
-    <div className="min-h-screen bg-black">
-      <Sidebar />
-      
+    <div className="min-h-screen bg-[#020202] text-zinc-100 font-modern selection:bg-orange-500/30">
       {/* Main Content */}
-      <main className="ml-64 min-h-screen">
-        {/* Header */}
-        <header className="h-16 border-b border-white/10 flex items-center justify-between px-8">
-          <h1 className="font-mono text-xl font-bold text-white">Repositories</h1>
-          <div className="flex items-center gap-4">
-            {lastUpdated && (
-              <span className="font-mono text-xs text-gray-500">
-                Updated {lastUpdated.toLocaleTimeString()}
-              </span>
-            )}
-            <button 
-              onClick={fetchRepositories}
-              className="p-2 hover:bg-white/5 rounded transition-colors text-gray-500 hover:text-white"
-              title="Refresh"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
-        </header>
-
-        <div className="p-8">
-          {/* Repositories Grid */}
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-mono text-xs uppercase tracking-wider text-gray-500">
-                Connected Repositories ({repositories.length})
-              </h2>
-            </div>
-            <RepositoriesGrid 
-              repositories={repositories} 
-              loading={loading}
-              onConnect={handleConnectRepo}
-            />
-          </section>
-        </div>
+      <main className="max-w-6xl mx-auto py-16 px-6">
+        <RepositoriesGrid 
+          repositories={repositories} 
+          loading={loading}
+          onConnect={handleConnectRepo}
+        />
       </main>
     </div>
   );

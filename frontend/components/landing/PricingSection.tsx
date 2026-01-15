@@ -3,50 +3,97 @@
 import { useState } from "react";
 import { PixelButton } from "@/components/ui/PixelButton";
 import { WaitlistModal } from "@/components/ui/WaitlistModal";
+import { authClient, useSession } from "@/lib/auth-client";
+import { useRouter } from "next/navigation";
 
 interface PricingTier {
   tier: string;
   name: string;
   features: string[];
   description: string;
+  price: number | string;
+  originalPrice?: number;
+  discount?: string;
   image?: string;
 }
 
 const pricingTiers: PricingTier[] = [
   {
-    tier: "NotSudo",
+    tier: "Basic",
     name: "Get started with real coding tasks.",
     features: [
       "15 tasks per day",
       "3 concurrent tasks",
       "Access Opus 4.5, Codex, Gemini 2.5",
     ],
+    price: 0,
     description: "",
   },
   {
-    tier: "NotSudo in Pro",
+    tier: "Pro",
     name: "For devs who ship daily and want to stay in the flow.",
     features: [
       "100 tasks per day, enough to run NotSudo throughout your coding day",
       "15 concurrent tasks, so you can run multiple threads in parallel",
       "Access latest models: Opus 4.5, Codex, Gemini 3",
     ],
+    price: 49,
+    originalPrice: 98,
+    discount: "50% OFF",
     description: "",
   },
   {
-    tier: "NotSudo in Ultra",
+    tier: "Ultra",
     name: "For builders who run agents at scale.",
     features: [
       "300 tasks per day to handle the most demanding development cycles",
       "60 concurrent tasks, built for massively parallel workflows",
       "Priority access: Opus 4.5, Codex, Gemini 3",
     ],
+    price: 100,
+    originalPrice: 200,
+    discount: "50% OFF",
     description: "",
   },
 ];
 
 export function PricingSection() {
   const [isWaitlistOpen, setIsWaitlistOpen] = useState(false);
+  const { data: session } = useSession();
+  const router = useRouter();
+
+  const handleCheckout = async (tier: string) => {
+    if (tier === "Basic") {
+      setIsWaitlistOpen(true);
+      return;
+    }
+
+    if (!session) {
+      router.push("/login?callbackUrl=#pricing");
+      return;
+    }
+
+    try {
+      // @ts-ignore - dodopayments is added by the plugin
+      const { data, error } = await authClient.dodopayments.checkout({
+        slug: tier.toLowerCase(),
+      });
+
+      if (error) {
+        console.error("Checkout error:", error);
+        // Fallback or show error
+        setIsWaitlistOpen(true);
+        return;
+      }
+
+      if (data?.url) {
+        window.location.href = data.url;
+      }
+    } catch (err) {
+      console.error("Checkout error:", err);
+      setIsWaitlistOpen(true);
+    }
+  };
 
   return (
     <section id="pricing" className="relative py-24 px-4 bg-black border-t-2 border-orange-500/30">
@@ -72,11 +119,33 @@ export function PricingSection() {
           {pricingTiers.map((tier, index) => (
             <div
               key={index}
-              className="bg-black border border-gray-800 p-8 flex flex-col h-full hover:border-orange-500/50 transition-colors group"
+              className="bg-black border border-gray-800 p-8 flex flex-col h-full hover:border-orange-500/50 transition-colors group relative overflow-hidden"
             >
+              {tier.discount && (
+                <div className="absolute top-0 right-0 bg-orange-500 text-black font-retro-body text-xs px-3 py-1 uppercase tracking-tighter">
+                  {tier.discount}
+                </div>
+              )}
+              
               <h3 className="text-xl font-retro-body text-orange-500 mb-4 uppercase tracking-wider">
                 [ {tier.tier} ]
               </h3>
+
+              <div className="mb-6">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-4xl font-retro-heading text-white">
+                    {tier.price === 0 ? "FREE" : `$${tier.price}`}
+                  </span>
+                  {tier.originalPrice && (
+                    <span className="text-xl text-gray-500 line-through font-retro-body">
+                      ${tier.originalPrice}
+                    </span>
+                  )}
+                </div>
+                {tier.price !== 0 && (
+                  <span className="text-gray-500 font-retro-body text-sm">/month</span>
+                )}
+              </div>
 
               <p className="text-gray-400 font-retro-body text-lg mb-8 min-h-[60px]">
                 {tier.name}
@@ -94,8 +163,8 @@ export function PricingSection() {
                 ))}
               </ul>
 
-              <PixelButton onClick={() => setIsWaitlistOpen(true)} className="w-full">
-                Join Waitlist
+              <PixelButton onClick={() => handleCheckout(tier.tier)} className="w-full">
+                {tier.tier === "Basic" ? "Join Waitlist" : "Get Started"}
               </PixelButton>
             </div>
           ))}

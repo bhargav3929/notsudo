@@ -255,6 +255,8 @@ class CodeExecutionService:
                 result.success = True
                 return result
             result.add_log(f"Detected stack: {stack_config.stack_type}")
+            if stack_config.project_root:
+                result.add_log(f"Using project root: {stack_config.project_root}")
             
             # Step 4: Choose execution mode
             if self.use_aws and self.aws_sandbox:
@@ -643,8 +645,12 @@ class CodeExecutionService:
         """
         import json as json_module
         
+        base_path = Path(repo_path)
+        if stack_config.project_root:
+            base_path = base_path / stack_config.project_root
+        
         if stack_config.stack_type == 'nodejs':
-            package_json_path = Path(repo_path) / 'package.json'
+            package_json_path = base_path / 'package.json'
             if package_json_path.exists():
                 try:
                     with open(package_json_path, 'r', encoding='utf-8') as f:
@@ -678,7 +684,7 @@ class CodeExecutionService:
         elif stack_config.stack_type == 'python':
             # For Python, check for pytest/test files
             # If requirements.txt has pytest or there are test files, assume tests exist
-            req_path = Path(repo_path) / 'requirements.txt'
+            req_path = base_path / 'requirements.txt'
             if req_path.exists():
                 try:
                     content = req_path.read_text()
@@ -688,11 +694,11 @@ class CodeExecutionService:
                     pass
             
             # Check for test directories or files
-            for item in Path(repo_path).rglob('test_*.py'):
+            for item in base_path.rglob('test_*.py'):
                 return True
-            for item in Path(repo_path).rglob('*_test.py'):
+            for item in base_path.rglob('*_test.py'):
                 return True
-            if (Path(repo_path) / 'tests').exists():
+            if (base_path / 'tests').exists():
                 return True
             
             return False
@@ -711,6 +717,23 @@ class CodeExecutionService:
                 rel_path = os.path.relpath(full_path, repo_path)
                 files.append(rel_path)
         return files
+
+    def _get_project_root_path(self, repo_path: str, stack_config: StackConfig) -> str:
+        if stack_config.project_root:
+            return str(Path(repo_path) / stack_config.project_root)
+        return repo_path
+
+    def _prefix_project_root_command(
+        self,
+        project_root: str,
+        command: str,
+        base_dir: str = "/workspace"
+    ) -> str:
+        if not project_root or not command:
+            return command
+        if base_dir:
+            return f"cd {base_dir}/{project_root} && {command}"
+        return f"cd {project_root} && {command}"
     
     def _format_files(
         self,
@@ -854,6 +877,8 @@ class CodeExecutionService:
             else:
                 result.add_log("yarn installed successfully")
         
+        raw_install_cmd = install_cmd
+        install_cmd = self._prefix_project_root_command(stack_config.project_root, raw_install_cmd)
         result.add_log(f"Installing dependencies: {install_cmd}")
         exec_result = self.docker_sandbox.exec_command(
             container, 
@@ -863,7 +888,45 @@ class CodeExecutionService:
         result.add_log(f"Install output:\n{exec_result.stdout[:1000]}")
         if exec_result.stderr:
             result.add_log(f"Install stderr:\n{exec_result.stderr[:500]}")
+        
+        if self._should_retry_npm_eresolve(raw_install_cmd, exec_result):
+            result.add_log("Retrying npm install with legacy peer deps due to ERESOLVE")
+            legacy_cmd = f"NPM_CONFIG_LEGACY_PEER_DEPS=true {raw_install_cmd}"
+            legacy_cmd = self._prefix_project_root_command(
+                stack_config.project_root,
+                legacy_cmd
+            )
+            exec_result = self.docker_sandbox.exec_command(
+                container,
+                legacy_cmd,
+                timeout=300,
+            )
+            result.add_log(f"Legacy install output:\n{exec_result.stdout[:1000]}")
+            if exec_result.stderr:
+                result.add_log(f"Legacy install stderr:\n{exec_result.stderr[:500]}")
+
         return exec_result
+
+    def _should_retry_npm_eresolve(self, install_cmd: str, exec_result: ExecResult) -> bool:
+        if exec_result.success:
+            return False
+        
+        if "npm" not in install_cmd:
+            return False
+        
+        stderr = exec_result.stderr or ""
+        stdout = exec_result.stdout or ""
+        if "ERESOLVE" not in stderr and "ERESOLVE" not in stdout:
+            return False
+        
+        lowered = install_cmd.lower()
+        if "--legacy-peer-deps" in lowered or "--force" in lowered:
+            return False
+        
+        if "npm_config_legacy_peer_deps" in lowered:
+            return False
+        
+        return True
     
     def _run_security_scan(
         self,
@@ -907,6 +970,10 @@ class CodeExecutionService:
             
             file_args = ' '.join(f'"/workspace/{f}"' for f in py_files)
             bandit_cmd = f"bandit -f json -ll --exit-zero {file_args}"
+            bandit_cmd = self._prefix_project_root_command(
+                stack_config.project_root,
+                bandit_cmd
+            )
             result.add_log(f"Scanning {len(py_files)} Python files with Bandit")
             
             scan_exec = self.docker_sandbox.exec_command(container, bandit_cmd, timeout=60)
@@ -922,6 +989,10 @@ class CodeExecutionService:
             
             file_args = ' '.join(f'"/workspace/{f}"' for f in js_files)
             eslint_cmd = f"npx eslint --format json --no-error-on-unmatched-pattern {file_args} 2>/dev/null || true"
+            eslint_cmd = self._prefix_project_root_command(
+                stack_config.project_root,
+                eslint_cmd
+            )
             result.add_log(f"Scanning {len(js_files)} JS/TS files with ESLint")
             
             scan_exec = self.docker_sandbox.exec_command(container, eslint_cmd, timeout=60)
@@ -1014,10 +1085,14 @@ class CodeExecutionService:
         result: ExecutionResult
     ) -> ExecResult:
         """Run tests in container."""
-        result.add_log(f"Running tests: {stack_config.test_command}")
+        test_cmd = self._prefix_project_root_command(
+            stack_config.project_root,
+            stack_config.test_command
+        )
+        result.add_log(f"Running tests: {test_cmd}")
         exec_result = self.docker_sandbox.exec_command(
             container,
-            stack_config.test_command,
+            test_cmd,
             timeout=300,  # 5 minutes for tests
         )
         result.add_log(f"Test output:\n{exec_result.stdout}")
@@ -1047,10 +1122,14 @@ class CodeExecutionService:
             if not install_mypy.success:
                 result.add_log(f"mypy install warning: {install_mypy.stderr[:200]}")
         
-        result.add_log(f"Running type check: {stack_config.typecheck_command}")
+        typecheck_cmd = self._prefix_project_root_command(
+            stack_config.project_root,
+            stack_config.typecheck_command
+        )
+        result.add_log(f"Running type check: {typecheck_cmd}")
         exec_result = self.docker_sandbox.exec_command(
             container,
-            stack_config.typecheck_command,
+            typecheck_cmd,
             timeout=120,  # 2 minutes for type checking
         )
         
@@ -1073,10 +1152,14 @@ class CodeExecutionService:
         result: ExecutionResult
     ) -> ExecResult:
         """Run build command in container."""
-        result.add_log(f"Running build: {stack_config.build_command}")
+        build_cmd = self._prefix_project_root_command(
+            stack_config.project_root,
+            stack_config.build_command
+        )
+        result.add_log(f"Running build: {build_cmd}")
         exec_result = self.docker_sandbox.exec_command(
             container,
-            stack_config.build_command,
+            build_cmd,
             timeout=300,
         )
         result.add_log(f"Build output:\n{exec_result.stdout[:1000]}")
@@ -1092,6 +1175,8 @@ class CodeExecutionService:
     ) -> ExecutionResult:
         """Fallback: run validation locally without Docker."""
         try:
+            project_root_path = self._get_project_root_path(repo_path, stack_config)
+
             # Prepare commands with package manager fallback
             install_cmd = stack_config.install_command
             test_cmd = stack_config.test_command
@@ -1112,7 +1197,7 @@ class CodeExecutionService:
             install = subprocess.run(
                 install_cmd,
                 shell=True,
-                cwd=repo_path,
+                cwd=project_root_path,
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -1131,7 +1216,7 @@ class CodeExecutionService:
                     test = subprocess.run(
                         test_cmd,
                         shell=True,
-                        cwd=repo_path,
+                        cwd=project_root_path,
                         capture_output=True,
                         text=True,
                         timeout=300,
@@ -1193,15 +1278,26 @@ class CodeExecutionService:
             result.add_log(f"Uploading {len(code_files)} files to AWS")
             
             # Determine test command
+            install_command = stack_config.install_command
             test_command = stack_config.test_command if run_tests else "echo 'Skipping tests'"
             if run_build and stack_config.build_command:
                 test_command = f"{test_command} && {stack_config.build_command}"
+            
+            if stack_config.project_root:
+                install_command = self._prefix_project_root_command(
+                    stack_config.project_root,
+                    install_command
+                )
+                test_command = self._prefix_project_root_command(
+                    stack_config.project_root,
+                    test_command
+                )
             
             # Run in Fargate
             fargate_result = self.aws_sandbox.run_validation(
                 code_files=code_files,
                 stack_type=stack_config.stack_type,
-                install_command=stack_config.install_command,
+                install_command=install_command,
                 test_command=test_command,
             )
             

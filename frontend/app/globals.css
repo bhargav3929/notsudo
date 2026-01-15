@@ -26,6 +26,19 @@
   --retro-purple: #a855f7;
   --retro-yellow: #eab308;
   --retro-red: #ef4444;
+
+  /* Modern Theme Variables */
+  --modern-orange: #f97316;
+  --modern-orange-glow: rgba(249, 115, 22, 0.5);
+  --modern-bg: #09090b;
+  --modern-card: #18181b;
+  --modern-border: #27272a;
+  --modern-text: #f4f4f5;
+  --modern-text-muted: #a1a1aa;
+}
+
+.font-modern {
+  font-family: var(--font-modern), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 /* Retro Neon Glow Effects */
@@ -217,25 +230,25 @@
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 24.6 95% 53.1%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 24.6 95% 53.1%;
   }
 }
 
@@ -543,4 +556,41 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+/* ==================== MODERN THEME ==================== */
+
+.modern-theme {
+  @apply font-modern text-zinc-100 bg-[#020202];
+}
+
+.modern-card {
+  @apply bg-zinc-900/50 border border-zinc-800 rounded-xl backdrop-blur-sm;
+}
+
+.modern-input {
+  @apply bg-zinc-900 border border-zinc-800 rounded-lg focus:ring-2 focus:ring-orange-500/50 focus:border-orange-500 outline-none transition-all;
+}
+
+.modern-button-primary {
+  @apply bg-orange-600 hover:bg-orange-700 text-white font-medium px-4 py-2 rounded-lg transition-all active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
+}
+
+.modern-glow-orange {
+  box-shadow: 0 0 20px rgba(249, 115, 22, 0.15);
+}
+
+.modern-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.modern-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.modern-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-zinc-800 rounded-full;
+}
+
+.modern-scrollbar::-webkit-scrollbar-thumb:hover {
+  @apply bg-zinc-700;
 }

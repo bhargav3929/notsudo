@@ -7,6 +7,7 @@ import os
 import hashlib
 from groq import Groq
 from utils.logger import get_logger
+from services import db
 
 # Default model - openai/gpt-oss-120b is Groq's recommended model for tool calling
 # See: https://console.groq.com/docs/tool-use/local-tool-calling
@@ -47,14 +48,14 @@ class GroqService:
         key_content = f"{method_name}:{serialized_args}"
         return hashlib.md5(key_content.encode()).hexdigest()
         
-    def generate_branch_name(self, issue_number, issue_title, issue_body):
+    def generate_branch_name(self, issue_number=None, issue_title=None, issue_body=None):
         """
         Generate a descriptive branch name using AI.
         
         Args:
-            issue_number: The GitHub issue number
-            issue_title: The title of the issue
-            issue_body: The description of the issue
+            issue_number: The GitHub issue number (optional)
+            issue_title: The title of the issue or task description
+            issue_body: The description of the issue (optional)
             
         Returns:
             A slugified branch name string
@@ -72,14 +73,17 @@ class GroqService:
             
         logger.info("cache_miss", method="generate_branch_name", key=cache_key)
         
-        system_prompt = """You are a git expert. Generate a short git branch name (3-5 words) for the given issue.
+        system_prompt = """You are a git expert. Generate a short git branch name (3-5 words) for the given task.
 Rules:
-- Format: issue_number-short-description
-- Example: 42-fix-login-validation
+- Format: issue_number-short-description (if issue number is provided)
+- Format: short-description (if no issue number is provided)
+- Example with issue: 42-fix-login-validation
+- Example without issue: add-readme-file
 - Content: Lowercase, alphanumeric and hyphens only.
 - Output: Return ONLY the branch name string."""
 
-        user_prompt = f"Issue #{issue_number}: {issue_title}"
+        prefix = f"Issue #{issue_number}: " if issue_number else ""
+        user_prompt = f"{prefix}{issue_title}"
         
         try:
             response = self.client.chat.completions.create(
@@ -107,16 +111,16 @@ Rules:
                 text = re.sub(r'[^a-z0-9\-/_]', '', text.replace(" ", "-"))
                 return text.strip("-")
 
-            if not branch_name or len(branch_name) <= len(str(issue_number)) + 1:
+            if not branch_name:
                 # Fallback to title if AI response is empty or too short
                 topic = slugify(issue_title)
                 # Keep only first 5 words of topic for brevity
                 topic = "-".join(topic.split("-")[:5])
-                branch_name = f"{issue_number}-{topic}"
+                branch_name = f"{issue_number}-{topic}" if issue_number else topic
             else:
                 branch_name = slugify(branch_name)
-                # Ensure it starts with the issue number
-                if not branch_name.startswith(str(issue_number)):
+                # Ensure it starts with the issue number if provided
+                if issue_number and not branch_name.startswith(str(issue_number)):
                     branch_name = f"{issue_number}-{branch_name}"
             
             logger.info("branch_name_generated", branch=branch_name)
@@ -129,7 +133,7 @@ Rules:
             # Fallback
             return f"{issue_number}-ai-fix"
 
-    def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files, custom_rules=None, repo_url=None, code_execution_service=None):
+    def analyze_issue_and_plan_changes(self, issue_title, issue_body, comment_body, codebase_files, custom_rules=None, repo_url=None, code_execution_service=None, job_id=None):
         """
         Analyze a GitHub issue and plan code changes using tool calling.
         
@@ -267,6 +271,15 @@ Available Codebase Files:
 
 Analyze this issue and determine what code changes are needed. Use the edit_file function to specify the exact changes."""
 
+        if job_id:
+            db.insert_job_log({
+                'job_id': job_id,
+                'role': 'user',
+                'type': 'message',
+                'content': f"**Issue Analysis Request**\n\n**Title:** {issue_title}\n\n**Body:**\n{issue_body}\n\n**Comment:**\n{comment_body}",
+                'metadata': {'file_count': len(codebase_files)}
+            })
+
         logger.info("calling_groq_llm", model=self.model, prompt_length=len(user_prompt))
         
         # Log full prompts for debugging
@@ -347,6 +360,18 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
                                     'new_content': new_content,
                                     'reason': reason
                                 })
+
+                                if job_id:
+                                    db.insert_job_log({
+                                        'job_id': job_id,
+                                        'role': 'assistant',
+                                        'type': 'file_change',
+                                        'content': reason or f"Editing {file_path}",
+                                        'metadata': {
+                                            'file_path': file_path,
+                                            'new_content': new_content
+                                        }
+                                    })
                             except json.JSONDecodeError as e:
                                 logger.error(
                                     "tool_call_parse_error",
@@ -373,6 +398,15 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
                     'file_changes': file_changes,
                     'analysis': message.content or "AI suggested file changes via tool calls"
                 }
+                
+                if job_id:
+                    db.insert_job_log({
+                        'job_id': job_id,
+                        'role': 'assistant',
+                        'type': 'message',
+                        'content': message.content or "Analysis complete. Suggested changes prepared.",
+                        'metadata': {'changes_count': len(file_changes)}
+                    })
                 
                 # Store in cache
                 self._cache[cache_key] = result
@@ -417,7 +451,7 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
         if last_error:
             raise last_error
     
-    def fix_test_failures(self, original_changes, error_logs, codebase_files=None):
+    def fix_test_failures(self, original_changes, error_logs, codebase_files=None, job_id=None):
         """
         Analyze test failures and suggest fixes.
         
@@ -539,6 +573,15 @@ Test Error Logs:
 
 Analyze the errors and provide fixed versions of the files using edit_file."""
 
+        if job_id:
+            db.insert_job_log({
+                'job_id': job_id,
+                'role': 'user',
+                'type': 'message',
+                'content': f"**Fixing Test Failures**\n\nErrors:\n```\n{error_logs[-1000:]}\n```",
+                'metadata': {'original_changes_count': len(original_changes)}
+            })
+
         logger.info("calling_groq_for_fix", model=self.model, prompt_length=len(user_prompt))
         logger.debug("fix_user_prompt", prompt=user_prompt[:3000])
 
@@ -595,6 +638,18 @@ Analyze the errors and provide fixed versions of the files using edit_file."""
                                     'new_content': args.get('new_content'),
                                     'reason': reason
                                 })
+                                
+                                if job_id:
+                                    db.insert_job_log({
+                                        'job_id': job_id,
+                                        'role': 'assistant',
+                                        'type': 'file_change',
+                                        'content': reason,
+                                        'metadata': {
+                                            'file_path': file_path,
+                                            'new_content': args.get('new_content')
+                                        }
+                                    })
                             except json.JSONDecodeError as e:
                                 logger.error("fix_parse_error", error=str(e))
                 

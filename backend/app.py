@@ -16,6 +16,7 @@ from services.github_service import GitHubService
 from services.pr_service import PRService
 from services import db as database
 from utils.logger import get_logger
+import requests as py_requests
 
 logger = get_logger(__name__)
 
@@ -250,9 +251,76 @@ def update_user_ai_settings():
     
     return jsonify(result), 200
 
+@app.route('/api/user/delete', methods=['DELETE'])
+def delete_user():
+    """Delete user and all associated data."""
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'user_id is required'}), 400
+    
+    success = database.delete_user_data(user_id)
+    if success:
+        return jsonify({'message': 'User and all data deleted successfully'}), 200
+    else:
+        return jsonify({'error': 'Failed to delete user or user not found'}), 404
+
 @app.route('/api/webhook-url', methods=['GET'])
 def get_webhook_url():
     return jsonify({'webhookUrl': get_current_webhook_url()}), 200
+
+@app.route('/api/auth/<path:path>', methods=['GET', 'POST'])
+def proxy_auth(path):
+    """
+    Proxy Better Auth and Dodo webhooks from Flask (8000) to Next.js (3000).
+    Highly transparent proxy to ensure signatures aren't broken.
+    """
+    url = f"http://localhost:3000/api/auth/{path}"
+    
+    # Filter out problematic headers
+    excluded = ['host', 'content-length', 'connection', 'content-type']
+    headers = {key: value for (key, value) in request.headers if key.lower() not in excluded}
+    
+    # Add forwarding headers
+    headers['X-Forwarded-Host'] = request.host
+    headers['X-Forwarded-Proto'] = request.scheme
+    headers['X-Forwarded-For'] = request.remote_addr
+    # Re-add content-type specifically
+    if request.content_type:
+        headers['Content-Type'] = request.content_type
+
+    # Enhanced logging for webhook debugging
+    webhook_headers = {k: v for k, v in request.headers if 'webhook' in k.lower() or 'signature' in k.lower() or 'dodo' in k.lower()}
+    logger.info("proxy_auth_attempt", 
+                path=path, 
+                method=request.method, 
+                webhook_headers=webhook_headers,
+                all_headers_passed=list(headers.keys()))
+    
+    try:
+        data = request.get_data()
+        if request.method == 'GET':
+            resp = py_requests.get(url, params=request.args, headers=headers, timeout=10)
+        else:
+            resp = py_requests.post(url, data=data, headers=headers, timeout=10)
+        
+        # Enhanced logging for errors
+        if resp.status_code >= 400:
+            logger.error("proxy_auth_result", 
+                        status=resp.status_code, 
+                        path=path,
+                        response_body=resp.text[:500] if resp.text else None)
+        else:
+            logger.info("proxy_auth_result", status=resp.status_code, path=path)
+        
+        # Filter response headers
+        resp_excluded = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        resp_headers = [(name, value) for (name, value) in resp.headers.items()
+                        if name.lower() not in resp_excluded]
+        
+        return (resp.content, resp.status_code, resp_headers)
+    except Exception as e:
+        logger.error("proxy_auth_error", error=str(e), path=path)
+        return jsonify({'error': 'Proxy failed'}), 502
 
 @app.route('/api/repos/webhook', methods=['POST'])
 def manage_webhook():
@@ -499,7 +567,8 @@ def handle_webhook():
             result = pr_service.process_pr_comment(
                 repo_full_name=repo_full_name,
                 pr_number=issue_number,
-                comment_body=comment_body
+                comment_body=comment_body,
+                job_id=job['id']
             )
         else:
             job['logs'].append('AI analyzing issue...')
@@ -510,7 +579,8 @@ def handle_webhook():
                 issue_number=issue_number,
                 issue_title=issue_title,
                 issue_body=issue_body,
-                comment_body=comment_body
+                comment_body=comment_body,
+                job_id=job['id']
             )
         
         job['status'] = 'completed' if result.get('success') else 'failed'
@@ -625,7 +695,8 @@ def test_issue():
             result = pr_service.process_pr_comment(
                 repo_full_name=repo_full_name,
                 pr_number=issue_number,
-                comment_body=comment_body
+                comment_body=comment_body,
+                job_id=job['id']
             )
         else:
             job['logs'].append('AI analyzing issue...')
@@ -635,7 +706,8 @@ def test_issue():
                 issue_number=issue_number,
                 issue_title=issue_title,
                 issue_body=issue_body,
-                comment_body=comment_body
+                comment_body=comment_body,
+                job_id=job['id']
             )
         
         job['status'] = 'completed' if result.get('success') else 'failed'
@@ -671,6 +743,91 @@ def test_issue():
 def get_jobs():
     jobs = load_jobs()
     return jsonify(jobs), 200
+
+
+@app.route('/api/jobs', methods=['POST'])
+def create_manual_job():
+    """
+    Create a manual PR generation job from a prompt.
+    """
+    config = load_config()
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+        
+    repo_full_name = data.get('repo')
+    prompt = data.get('prompt')
+    user_id = data.get('user_id')
+    
+    if not repo_full_name or not prompt:
+        return jsonify({'error': 'repo and prompt are required'}), 400
+        
+    github_token = config.get('github_token')
+    if not github_token:
+        return jsonify({'error': 'GitHub token not configured'}), 500
+        
+    # Generate a job ID
+    job_id = f"manual-{repo_full_name.replace('/', '-')}-{int(datetime.now().timestamp())}"
+    
+    # Build job data
+    job = {
+        'id': job_id,
+        'user_id': user_id,
+        'repo': repo_full_name,
+        'issueNumber': None,
+        'issueTitle': f"Manual Task: {prompt[:50]}...",
+        'status': 'processing',
+        'stage': 'analyzing',
+        'retryCount': 0,
+        'createdAt': datetime.now().isoformat(),
+        'prUrl': None,
+        'error': None,
+        'logs': ['Manual job started'],
+        'validationLogs': []
+    }
+    
+    # Save initial job state
+    save_job(job)
+    
+    # Run in background to avoid checkout/AI timeout
+    def run_task():
+        try:
+            github_service = GitHubService(github_token)
+            ai_service = get_ai_service(config)
+            pr_service = PRService(github_service, ai_service)
+            
+            result = pr_service.process_manual_task(
+                repo_full_name=repo_full_name,
+                prompt=prompt,
+                user_id=user_id,
+                job_id=job_id
+            )
+            
+            job['status'] = 'completed' if result.get('success') else 'failed'
+            job['completedAt'] = datetime.now().isoformat()
+            job['prUrl'] = result.get('pr_url')
+            job['error'] = result.get('message') if not result.get('success') else None
+            job['validationLogs'] = result.get('validation_logs', [])
+            job['stage'] = 'completed' if result.get('success') else 'failed'
+            job['logs'].append(f"Result: {'PR created' if result.get('success') else result.get('message', 'Failed')}")
+            save_job(job)
+            
+        except Exception as e:
+            logger.error("manual_task_failed", error=str(e))
+            job['status'] = 'failed'
+            job['stage'] = 'error'
+            job['error'] = str(e)
+            job['logs'].append(f"Error: {str(e)}")
+            save_job(job)
+
+    executor.submit(run_task)
+    
+    return jsonify({
+        'success': True,
+        'message': 'Job started successfully',
+        'job_id': job_id
+    }), 201
 
 
 @app.route('/api/repos', methods=['GET'])
@@ -727,6 +884,16 @@ def get_job_logs(job_id):
                 'stage': job.get('stage', 'unknown')
             }), 200
     return jsonify({'error': 'Job not found'}), 404
+
+
+@app.route('/api/jobs/<job_id>/feed', methods=['GET'])
+def get_job_feed(job_id):
+    """Get structured logs (feed) for a specific job."""
+    logs = database.get_job_logs(job_id)
+    return jsonify({
+        'jobId': job_id,
+        'entries': logs
+    }), 200
 
 
 @app.route('/health', methods=['GET'])

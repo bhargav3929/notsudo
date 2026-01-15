@@ -36,11 +36,13 @@ class User(Base):
     updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     selectedModel = Column(String, nullable=True, default='anthropic/claude-3.5-sonnet')
     customRules = Column(Text, nullable=True)
+    dodoCustomerId = Column(String, nullable=True)
     
     # Relationships
     repositories = relationship("Repository", back_populates="user")
     jobs = relationship("Job", back_populates="user")
     issues = relationship("Issue", back_populates="user")
+    subscriptions = relationship("Subscription", back_populates="user")
 
 
 class Session(Base):
@@ -153,7 +155,7 @@ class Job(Base):
     id = Column(String, primary_key=True)
     user_id = Column(String, ForeignKey('user.id', ondelete='SET NULL'), nullable=True)
     repository_id = Column(String, ForeignKey('repository.id', ondelete='SET NULL'), nullable=True)
-    issue_number = Column(Integer, nullable=False)
+    issue_number = Column(Integer, nullable=True)
     issue_title = Column(String, nullable=True)
     status = Column(String, default='processing', nullable=False)  # processing, completed, failed
     stage = Column(String, default='analyzing')  # analyzing, generating, validating, completed, error
@@ -173,6 +175,30 @@ class Job(Base):
         Index('job_user_id_idx', 'user_id'),
         Index('job_repository_id_idx', 'repository_id'),
         Index('job_status_idx', 'status'),
+    )
+    
+    # Relationships
+    logs_relation = relationship("JobLog", back_populates="job", cascade="all, delete-orphan")
+
+
+class JobLog(Base):
+    """JobLog table - granular logs for AI jobs (chats, commands, file changes)."""
+    __tablename__ = 'job_log'
+    
+    id = Column(String, primary_key=True)
+    job_id = Column(String, ForeignKey('job.id', ondelete='CASCADE'), nullable=False)
+    role = Column(String, nullable=False)  # user, assistant, system, tool
+    type = Column(String, nullable=False)  # message, command, file_change, error, info
+    content = Column(Text, nullable=True)
+    metadata_ = Column("metadata", JSON, default={})  # 'metadata' is reserved in SQLAlchemy Base
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    job = relationship("Job", back_populates="logs_relation")
+    
+    __table_args__ = (
+        Index('job_log_job_id_idx', 'job_id'),
+        Index('job_log_created_at_idx', 'created_at'),
     )
 
 
@@ -201,4 +227,26 @@ class Issue(Base):
         Index('issue_user_id_idx', 'user_id'),
         Index('issue_repository_id_idx', 'repository_id'),
         Index('issue_github_id_idx', 'github_id'),
+    )
+
+
+class Subscription(Base):
+    """Subscription table - tracks Dodo Payments subscriptions."""
+    __tablename__ = 'subscription'
+    
+    id = Column(String, primary_key=True) # Dodo Payments Subscription ID
+    user_id = Column(String, ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    plan = Column(String, nullable=False) # pro, ultra
+    status = Column(String, nullable=False) # active, cancelled, on_hold, etc.
+    quantity = Column(Integer, default=1)
+    next_billing_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    # Relationships
+    user = relationship("User", back_populates="subscriptions")
+    
+    __table_args__ = (
+        Index('subscription_user_id_idx', 'user_id'),
+        Index('subscription_status_idx', 'status'),
     )

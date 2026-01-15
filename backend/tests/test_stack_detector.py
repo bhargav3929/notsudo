@@ -62,6 +62,7 @@ class TestStackDetectorService:
         files = ['backend/src/main.py', 'backend/requirements.txt', 'frontend/package.json']
         result = self.detector.detect_from_file_list(files)
         assert result is not None
+        assert result.project_root == 'frontend'
 
 
 class TestStackConfigs:
