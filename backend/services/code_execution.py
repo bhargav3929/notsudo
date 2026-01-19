@@ -528,6 +528,163 @@ class CodeExecutionService:
                 self.docker_sandbox.cleanup_image(built_image)
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)    
+    def start_merge_check(
+        self,
+        repo_url: str,
+        source_branch: str,
+        target_branch: str,
+        github_token: str
+    ) -> dict:
+        """
+        Check for merge conflicts.
+        Returns dict with:
+          - has_conflicts: bool
+          - conflicts: list[dict] (if has_conflicts)
+          - session: SandboxSession (if has_conflicts, to keep temp dir alive)
+        """
+        import uuid
+
+        # Inject token into URL for authenticated operations
+        # Note: Be careful not to log this URL
+        if "https://" in repo_url:
+            auth_repo_url = repo_url.replace("https://", f"https://x-access-token:{github_token}@")
+        else:
+            auth_repo_url = repo_url # Assume it might already be authenticated or SSH
+
+        temp_dir = tempfile.mkdtemp(prefix='sandbox-merge-')
+
+        try:
+            # 1. Clone repository
+            logger.info("cloning_repo_for_merge_check", repo=repo_url, branch=source_branch)
+            clone_result = self._clone_repo(auth_repo_url, source_branch, temp_dir)
+            if not clone_result.success:
+                logger.error("clone_failed_merge_check", error=clone_result.stderr)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise Exception(f"Failed to clone repository: {clone_result.stderr}")
+
+            # 2. Fetch target branch
+            logger.info("fetching_target_branch", branch=target_branch)
+            fetch_result = subprocess.run(
+                ["git", "fetch", "origin", target_branch],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True
+            )
+            if fetch_result.returncode != 0:
+                logger.error("fetch_failed", error=fetch_result.stderr)
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                raise Exception(f"Failed to fetch target branch {target_branch}: {fetch_result.stderr}")
+
+            # 3. Attempt merge
+            logger.info("attempting_merge", source=source_branch, target=target_branch)
+            # Configure git user/email for merge
+            subprocess.run(["git", "config", "user.email", "bot@notsudo.com"], cwd=temp_dir, check=False)
+            subprocess.run(["git", "config", "user.name", "NotSudo Bot"], cwd=temp_dir, check=False)
+
+            merge_result = subprocess.run(
+                ["git", "merge", f"origin/{target_branch}", "--no-commit", "--no-ff"],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True
+            )
+
+            if merge_result.returncode == 0:
+                logger.info("merge_clean")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return {'has_conflicts': False}
+
+            # 4. Identify conflicted files
+            logger.info("merge_conflicts_detected")
+
+            diff_result = subprocess.run(
+                ["git", "diff", "--name-only", "--diff-filter=U"],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True
+            )
+
+            conflicts = []
+            conflicted_file_paths = diff_result.stdout.strip().split('\n')
+            conflicted_file_paths = [f for f in conflicted_file_paths if f]
+
+            for file_path in conflicted_file_paths:
+                full_path = Path(temp_dir) / file_path
+                try:
+                    content = full_path.read_text(encoding='utf-8', errors='replace')
+                    conflicts.append({
+                        'file_path': file_path,
+                        'content': content
+                    })
+                except Exception as e:
+                    logger.warning("failed_to_read_conflicted_file", file=file_path, error=str(e))
+
+            # Create session to persist temp_dir
+            session = SandboxSession(
+                id=str(uuid.uuid4()),
+                type='local_git',
+                work_dir=temp_dir,
+                resource_id='none'
+            )
+
+            return {
+                'has_conflicts': True,
+                'conflicts': conflicts,
+                'session': session
+            }
+
+        except Exception as e:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+    def complete_merge_resolution(self, session: SandboxSession, resolved_files: list[dict]):
+        """
+        Apply resolved files, commit merge, and push.
+        """
+        temp_dir = session.work_dir
+        if not temp_dir or not os.path.exists(temp_dir):
+            raise ValueError("Session working directory does not exist")
+
+        try:
+            logger.info("completing_merge_resolution", session_id=session.id, files=len(resolved_files))
+
+            # 1. Write resolved files
+            for file_change in resolved_files:
+                file_path = Path(temp_dir) / file_change['file_path']
+                file_path.write_text(file_change['new_content'], encoding='utf-8')
+
+            # 2. Add files
+            subprocess.run(["git", "add", "."], cwd=temp_dir, check=True)
+
+            # 3. Commit
+            commit_msg = "Merge branch 'main' (Resolved Conflicts)"
+            commit_result = subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True
+            )
+            if commit_result.returncode != 0:
+                 logger.error("commit_failed", error=commit_result.stderr)
+                 raise Exception(f"Failed to commit merge resolution: {commit_result.stderr}")
+
+            # 4. Push
+            logger.info("pushing_merge_resolution")
+            push_result = subprocess.run(
+                ["git", "push"],
+                cwd=temp_dir,
+                capture_output=True,
+                text=True
+            )
+            if push_result.returncode != 0:
+                logger.error("push_failed", error=push_result.stderr)
+                raise Exception(f"Failed to push merge resolution: {push_result.stderr}")
+
+            logger.info("merge_resolution_pushed_successfully")
+
+        finally:
+            self.cleanup_session(session)
+
     def _clone_repo(self, repo_url: str, branch: str, dest: str) -> ExecResult:
         """Clone the repository."""
         try:

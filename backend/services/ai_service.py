@@ -807,3 +807,103 @@ Analyze the errors and provide fixed versions of the files using edit_file."""
         except Exception as e:
             logger.error("fix_call_failed", error=str(e))
             raise
+
+    def resolve_merge_conflicts(self, conflicted_files, job_id=None):
+        """
+        Resolve merge conflicts in the provided files.
+        """
+        logger.info("resolving_merge_conflicts", file_count=len(conflicted_files))
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "edit_file",
+                    "description": "Provide the resolved content for a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "The path to the file to edit"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Explanation of the resolution"
+                            },
+                            "new_content": {
+                                "type": "string",
+                                "description": "The complete resolved content for the file"
+                            }
+                        },
+                        "required": ["file_path", "reason", "new_content"]
+                    }
+                }
+            }
+        ]
+
+        conflicts_context = "\n\n".join([
+            f"File: {f['file_path']}\n```\n{f['content']}\n```"
+            for f in conflicted_files
+        ])
+
+        system_prompt = """You are an expert software engineer. Your task is to resolve git merge conflicts.
+The input files contain standard git conflict markers (<<<<<<<, =======, >>>>>>>).
+
+Rules:
+1. Analyze the conflicting sections.
+2. Resolve the conflicts by intelligently combining changes or choosing the correct version.
+3. Remove all conflict markers.
+4. Provide the COMPLETE resolved file content in new_content.
+5. Preserve the formatting and structure of the file.
+6. Return the full file content, not just the fixed section."""
+
+        user_prompt = f"""The following files have merge conflicts:
+
+{conflicts_context}
+
+Resolve the conflicts and return the clean file content using edit_file."""
+
+        logger.info("calling_llm_for_conflict_resolution", model=self.model, prompt_length=len(user_prompt))
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                tools=tools,
+                tool_choice="auto"
+            )
+
+            message = response.choices[0].message
+
+            file_changes = []
+            if message.tool_calls:
+                for tool_call in message.tool_calls:
+                    if tool_call.function.name == "edit_file":
+                        try:
+                            args = json.loads(tool_call.function.arguments)
+                            file_path = args.get('file_path') or args.get('path')
+                            reason = args.get('reason', 'Resolved merge conflicts')
+                            new_content = args.get('new_content', '')
+
+                            # Normalize newlines
+                            if new_content:
+                                new_content = new_content.replace('\\n', '\n').replace('\\r\\n', '\n').replace('\\r', '\n')
+
+                            file_changes.append({
+                                'file_path': file_path,
+                                'new_content': new_content,
+                                'reason': reason
+                            })
+                        except json.JSONDecodeError as e:
+                            logger.error("conflict_resolution_parse_error", error=str(e))
+
+            logger.info("conflict_resolution_complete", resolved_count=len(file_changes))
+            return file_changes
+
+        except Exception as e:
+            logger.error("conflict_resolution_failed", error=str(e))
+            raise
