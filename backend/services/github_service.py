@@ -25,6 +25,7 @@ class GitHubService:
     def __init__(self, token):
         if not token:
             raise ValueError("GitHub token is required")
+        self.token = token
         self.github = Github(token)
         logger.info("github_service_initialized")
 
