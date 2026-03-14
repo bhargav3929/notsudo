@@ -1,40 +1,53 @@
 from gevent import monkey
 monkey.patch_all()
-import os
-import json
-import hmac
+
 import hashlib
+import hmac
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
+import requests as py_requests
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room
-from dotenv import load_dotenv
 
-from services.groq_service import GroqService
+import tasks
+from services import db as database
 from services.ai_service import AIService, AVAILABLE_MODELS, DEFAULT_MODEL
 from services.github_service import GitHubService
-from services.pr_service import PRService
-from services import db as database
+from services.groq_service import GroqService
 from services.redis_service import (
-    set_cache, get_cache, delete_cache, enqueue_job, set_job_cache, 
-    get_job_cache, get_all_job_ids, acquire_lock, release_lock
+    acquire_lock,
+    enqueue_job,
+    get_all_job_ids,
+    get_cache,
+    get_job_cache,
+    release_lock,
+    set_cache,
+    set_job_cache,
 )
-import tasks
 from utils.logger import get_logger
-import requests as py_requests
-
-logger = get_logger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+JOBS_FILE_PATH = "/tmp/jobs.json"
+MAX_EXECUTOR_WORKERS = 10
+MAX_STORED_JOBS = 100
+CACHE_TTL_SECONDS = 600
+RATE_LIMIT_WINDOW_SECONDS = 60
+
+logger = get_logger(__name__)
+executor = ThreadPoolExecutor(max_workers=MAX_EXECUTOR_WORKERS)
+
 app = Flask(__name__)
 CORS(app)
 
-# Initialize database
 if database.is_db_available():
     try:
         database.init_db()
@@ -42,8 +55,6 @@ if database.is_db_available():
     except Exception as e:
         logger.error("database_initialization_failed", error=str(e))
 
-# Initialize SocketIO with Redis message queue for background task communication
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 socketio = SocketIO(app, cors_allowed_origins="*", message_queue=REDIS_URL)
 
 @socketio.on('join_job')
@@ -53,12 +64,14 @@ def handle_join_job(data):
         join_room(job_id)
         logger.info("socket_client_joined_job", job_id=job_id, sid=request.sid)
 
+
 @socketio.on('leave_job')
 def handle_leave_job(data):
     job_id = data.get('jobId')
     if job_id:
         leave_room(job_id)
         logger.info("socket_client_left_job", job_id=job_id, sid=request.sid)
+
 
 @socketio.on('join_user')
 def handle_join_user(data):
@@ -67,6 +80,7 @@ def handle_join_user(data):
         join_room(f"user_{user_id}")
         logger.info("socket_client_joined_user", user_id=user_id, sid=request.sid)
 
+
 @socketio.on('leave_user')
 def handle_leave_user(data):
     user_id = data.get('userId')
@@ -74,11 +88,6 @@ def handle_leave_user(data):
         leave_room(f"user_{user_id}")
         logger.info("socket_client_left_user", user_id=user_id, sid=request.sid)
 
-jobs_file = "/tmp/jobs.json"
-
-# Global executor for thread management
-# Limit max_workers to avoid resource exhaustion
-executor = ThreadPoolExecutor(max_workers=10)
 
 def load_config():
     return {
@@ -90,84 +99,79 @@ def load_config():
     }
 
 
-def get_ai_service(config, user_model=None):
-    """
-    Factory function to get the appropriate AI service.
-    
-    In development (USE_OPENROUTER=false): Uses GroqService
-    In production (USE_OPENROUTER=true): Uses AIService (OpenRouter)
-    
-    Args:
-        config: Application config dict
-        user_model: Optional user-selected model for OpenRouter
-    """
+def create_ai_service(config, user_model=None):
     if config.get('use_openrouter'):
         api_key = config.get('openrouter_key')
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY not configured")
         return AIService(api_key=api_key, model=user_model)
-    else:
-        api_key = config.get('groq_key')
-        if not api_key:
-            raise ValueError("GROQ_API_KEY not configured")
-        return GroqService(api_key=api_key)
 
-def load_jobs(user_id=None):
-    """Load jobs from database or fall back to JSON file, merging with Redis cache."""
-    base_jobs = []
-    if database.is_db_available():
-        base_jobs = database.get_jobs(user_id=user_id)
-    elif os.path.exists(jobs_file):
-        # Fallback to JSON file
-        try:
-            with open(jobs_file, 'r') as f:
-                base_jobs = json.load(f)
-        except Exception:
-            base_jobs = []
-        
-        # Simple local filtering if DB not available
-        if user_id:
-            base_jobs = [j for j in base_jobs if (j.get('userId') == user_id or j.get('user_id') == user_id)]
-    
-    # Track which job IDs we already have
+    api_key = config.get('groq_key')
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not configured")
+    return GroqService(api_key=api_key)
+
+def fetch_jobs(user_id=None):
+    base_jobs = fetch_jobs_from_storage(user_id)
     existing_job_ids = {job.get('id') for job in base_jobs if job.get('id')}
-    
-    # Merge with Redis cache for the most up-to-date status
-    for i, job in enumerate(base_jobs):
+    base_jobs = merge_jobs_with_cache(base_jobs)
+    base_jobs = append_redis_only_jobs(base_jobs, existing_job_ids, user_id)
+    return base_jobs
+
+
+def fetch_jobs_from_storage(user_id):
+    if database.is_db_available():
+        return database.get_jobs(user_id=user_id)
+
+    if not os.path.exists(JOBS_FILE_PATH):
+        return []
+
+    try:
+        with open(JOBS_FILE_PATH, 'r') as f:
+            jobs = json.load(f)
+    except Exception:
+        return []
+
+    if user_id:
+        jobs = [j for j in jobs if (j.get('userId') == user_id or j.get('user_id') == user_id)]
+
+    return jobs
+
+
+def merge_jobs_with_cache(jobs):
+    for i, job in enumerate(jobs):
         job_id = job.get('id')
         if job_id:
             cached_job = get_job_cache(job_id)
             if cached_job:
-                # Update with cached data while preserving non-cached fields if any
-                base_jobs[i] = {**job, **cached_job}
+                jobs[i] = {**job, **cached_job}
+    return jobs
 
-    # Add jobs from Redis that aren't in base_jobs (e.g. newly created or not yet persisted)
+
+def append_redis_only_jobs(jobs, existing_ids, user_id):
     redis_job_ids = get_all_job_ids()
     for job_id in redis_job_ids:
-        if job_id not in existing_job_ids:
-            cached_job = get_job_cache(job_id)
-            if cached_job:
-                # Filter by user_id if requested
-                if user_id:
-                    cached_user_id = cached_job.get('userId') or cached_job.get('user_id')
-                    # If job has a user_id and it doesn't match, skip it.
-                    # If it doesn't have a user_id, we might want to show it anyway (system jobs/webhooks)
-                    # but for now, let's be strict if they are in the user's dashboard.
-                    if cached_user_id and cached_user_id != user_id:
-                        continue
-                        
-                base_jobs.insert(0, cached_job)
-                
-    return base_jobs
+        if job_id in existing_ids:
+            continue
 
-def save_job(job):
-    """Save job to Redis cache (write-through) and then to database or JSON file."""
+        cached_job = get_job_cache(job_id)
+        if not cached_job:
+            continue
+
+        if user_id:
+            cached_user_id = cached_job.get('userId') or cached_job.get('user_id')
+            if cached_user_id and cached_user_id != user_id:
+                continue
+
+        jobs.insert(0, cached_job)
+
+    return jobs
+
+def persist_job(job):
     job_id = job.get('id')
     if job_id:
-        # Step 1: Write to Redis cache first
         set_job_cache(job_id, job)
-        
-    # Step 2: Write to persistent storage
+
     if database.is_db_available():
         existing = database.get_job_by_id(job_id)
         if existing:
@@ -175,27 +179,29 @@ def save_job(job):
         else:
             database.insert_job(job)
         return
-    
-    # Fallback to JSON file
-    jobs = load_jobs()
+
+    persist_job_to_file(job)
+
+
+def persist_job_to_file(job):
+    jobs = fetch_jobs()
     existing_index = None
     for i, existing_job in enumerate(jobs):
         if existing_job.get('id') == job.get('id'):
             existing_index = i
             break
-    
+
     if existing_index is not None:
         jobs[existing_index] = job
     else:
         jobs.insert(0, job)
-    
-    jobs = jobs[:100]
-    with open(jobs_file, 'w') as f:
+
+    jobs = jobs[:MAX_STORED_JOBS]
+    with open(JOBS_FILE_PATH, 'w') as f:
         json.dump(jobs, f)
 
 def is_job_in_progress(repo_full_name, issue_number):
-    """Check if there is already a job in progress for this issue."""
-    jobs = load_jobs()
+    jobs = fetch_jobs()
     for job in jobs:
         if (job.get('repo') == repo_full_name and
             job.get('issueNumber') == issue_number and
@@ -203,46 +209,38 @@ def is_job_in_progress(repo_full_name, issue_number):
             return True
     return False
 
-def is_rate_limited(repo_full_name, issue_number, window_seconds=60):
-    """Check if a job was created for this issue recently."""
-    jobs = load_jobs()
+
+def is_rate_limited(repo_full_name, issue_number):
+    jobs = fetch_jobs()
     now = datetime.now()
     for job in jobs:
-        if (job.get('repo') == repo_full_name and
-            job.get('issueNumber') == issue_number):
+        if job.get('repo') != repo_full_name or job.get('issueNumber') != issue_number:
+            continue
 
-            created_at_str = job.get('createdAt')
-            if created_at_str:
-                try:
-                    created_at = datetime.fromisoformat(created_at_str)
-                    time_diff = (now - created_at).total_seconds()
-                    if time_diff < window_seconds:
-                        return True
-                except ValueError:
-                    continue
+        created_at_str = job.get('createdAt')
+        if not created_at_str:
+            continue
+
+        try:
+            created_at = datetime.fromisoformat(created_at_str)
+            time_diff = (now - created_at).total_seconds()
+            if time_diff < RATE_LIMIT_WINDOW_SECONDS:
+                return True
+        except ValueError:
+            continue
+
     return False
 
 
 def create_job_atomically(repo_full_name, issue_number, job_data):
-    """
-    Create a job atomically, preventing race conditions from concurrent webhooks.
-    
-    Uses Redis lock + atomic database operation (if available) or fallback checks.
-    
-    Returns:
-        The created job dict if successful, None if a duplicate exists
-    """
-    # Create a unique lock key for this repo/issue combination
     lock_key = f"job_lock:{repo_full_name}:{issue_number}"
-    
-    # Try to acquire a lock to prevent race conditions
+
     if not acquire_lock(lock_key, timeout=10):
         logger.warning("job_creation_locked", repo=repo_full_name, issue=issue_number)
         return None
-        
+
     try:
         if database.is_db_available():
-            # Use atomic database operation
             result = database.atomic_create_job_if_not_exists(
                 repo_full_name=repo_full_name,
                 issue_number=issue_number,
@@ -251,18 +249,18 @@ def create_job_atomically(repo_full_name, issue_number, job_data):
             if result is None:
                 logger.warning("job_duplicate_prevented_atomic", repo=repo_full_name, issue=issue_number)
             return result
-        else:
-            # Fallback: use in-memory checks (not fully atomic, but best effort)
-            if is_job_in_progress(repo_full_name, issue_number):
-                logger.warning("job_duplicate_prevented", repo=repo_full_name, issue=issue_number)
-                return None
-            if is_rate_limited(repo_full_name, issue_number):
-                logger.warning("job_rate_limited", repo=repo_full_name, issue=issue_number)
-                return None
-            save_job(job_data)
-            return job_data
+
+        if is_job_in_progress(repo_full_name, issue_number):
+            logger.warning("job_duplicate_prevented", repo=repo_full_name, issue=issue_number)
+            return None
+
+        if is_rate_limited(repo_full_name, issue_number):
+            logger.warning("job_rate_limited", repo=repo_full_name, issue=issue_number)
+            return None
+
+        persist_job(job_data)
+        return job_data
     finally:
-        # Always release the lock
         release_lock(lock_key)
 
 
@@ -270,21 +268,83 @@ def create_job_atomically(repo_full_name, issue_number, job_data):
 def verify_github_signature(payload_body, signature_header, secret):
     if not signature_header or not secret:
         return False
-    
-    hash_algorithm, github_signature = signature_header.split('=')
-    
+
+    _, github_signature = signature_header.split('=')
     mac = hmac.new(secret.encode(), msg=payload_body, digestmod=hashlib.sha256)
     expected_signature = mac.hexdigest()
-    
     return hmac.compare_digest(expected_signature, github_signature)
 
-def get_current_webhook_url():
+def build_webhook_url():
     base_url = os.environ.get('WEBHOOK_BASE_URL')
     if base_url:
-        webhook_url = f"{base_url}/api/webhook"
-    else:
-        webhook_url = "http://localhost:8000/api/webhook"
-    return webhook_url
+        return f"{base_url}/api/webhook"
+    return "http://localhost:8000/api/webhook"
+
+
+def build_webhook_job(repo_full_name, issue_number, issue_title, initial_log):
+    return {
+        'id': f"{repo_full_name}-{issue_number}-{datetime.now().timestamp()}",
+        'repo': repo_full_name,
+        'issueNumber': issue_number,
+        'issueTitle': issue_title,
+        'status': 'processing',
+        'stage': 'analyzing',
+        'retryCount': 0,
+        'createdAt': datetime.now().isoformat(),
+        'prUrl': None,
+        'error': None,
+        'logs': [initial_log],
+        'validationLogs': []
+    }
+
+
+def build_manual_job(job_id, repo_full_name, prompt, user_id):
+    return {
+        'id': job_id,
+        'user_id': user_id,
+        'repo': repo_full_name,
+        'issueNumber': None,
+        'issueTitle': f"Manual Task: {prompt[:50]}...",
+        'status': 'processing',
+        'stage': 'analyzing',
+        'retryCount': 0,
+        'createdAt': datetime.now().isoformat(),
+        'prUrl': None,
+        'error': None,
+        'logs': ['Manual job started'],
+        'validationLogs': []
+    }
+
+
+def enqueue_webhook_task(job_id, repo_full_name, issue_number, issue_title, issue_body, comment_body, is_pr, github_token, config):
+    enqueue_job(
+        tasks.process_webhook_task,
+        params={
+            'job_id': job_id,
+            'repo_full_name': repo_full_name,
+            'issue_number': issue_number,
+            'issue_title': issue_title,
+            'issue_body': issue_body,
+            'comment_body': comment_body,
+            'is_pr': is_pr,
+            'github_token': github_token,
+            'config': config
+        }
+    )
+
+
+def enqueue_manual_task(job_id, repo_full_name, prompt, user_id, github_token, config):
+    enqueue_job(
+        tasks.process_manual_task,
+        params={
+            'job_id': job_id,
+            'repo_full_name': repo_full_name,
+            'prompt': prompt,
+            'user_id': user_id,
+            'github_token': github_token,
+            'config': config
+        }
+    )
 
 @app.route('/api/config', methods=['POST'])
 def save_configuration():
@@ -305,7 +365,6 @@ def get_configuration():
 
 @app.route('/api/models', methods=['GET'])
 def get_available_models():
-    """Get list of available AI models."""
     return jsonify({
         'models': list(AVAILABLE_MODELS.values()),
         'default': DEFAULT_MODEL
@@ -313,7 +372,6 @@ def get_available_models():
 
 @app.route('/api/user/ai-settings', methods=['GET'])
 def get_user_ai_settings():
-    """Get user's AI settings (selected model and custom rules)."""
     user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({'error': 'user_id is required'}), 400
@@ -329,7 +387,6 @@ def get_user_ai_settings():
 
 @app.route('/api/user/ai-settings', methods=['PUT'])
 def update_user_ai_settings():
-    """Update user's AI settings."""
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
@@ -354,7 +411,6 @@ def update_user_ai_settings():
 
 @app.route('/api/user/delete', methods=['DELETE'])
 def delete_user():
-    """Delete user and all associated data."""
     user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({'error': 'user_id is required'}), 400
@@ -367,57 +423,46 @@ def delete_user():
 
 @app.route('/api/webhook-url', methods=['GET'])
 def get_webhook_url():
-    return jsonify({'webhookUrl': get_current_webhook_url()}), 200
+    return jsonify({'webhookUrl': build_webhook_url()}), 200
 
 @app.route('/api/auth/<path:path>', methods=['GET', 'POST'])
 def proxy_auth(path):
-    """
-    Proxy Better Auth and Dodo webhooks from Flask (8000) to Next.js (3000).
-    Highly transparent proxy to ensure signatures aren't broken.
-    """
     url = f"http://localhost:3000/api/auth/{path}"
-    
-    # Filter out problematic headers
+
     excluded = ['host', 'content-length', 'connection', 'content-type']
     headers = {key: value for (key, value) in request.headers if key.lower() not in excluded}
-    
-    # Add forwarding headers
     headers['X-Forwarded-Host'] = request.host
     headers['X-Forwarded-Proto'] = request.scheme
     headers['X-Forwarded-For'] = request.remote_addr
-    # Re-add content-type specifically
     if request.content_type:
         headers['Content-Type'] = request.content_type
 
-    # Enhanced logging for webhook debugging
     webhook_headers = {k: v for k, v in request.headers if 'webhook' in k.lower() or 'signature' in k.lower() or 'dodo' in k.lower()}
-    logger.info("proxy_auth_attempt", 
-                path=path, 
-                method=request.method, 
+    logger.info("proxy_auth_attempt",
+                path=path,
+                method=request.method,
                 webhook_headers=webhook_headers,
                 all_headers_passed=list(headers.keys()))
-    
+
     try:
         data = request.get_data()
         if request.method == 'GET':
             resp = py_requests.get(url, params=request.args, headers=headers, timeout=10)
         else:
             resp = py_requests.post(url, data=data, headers=headers, timeout=10)
-        
-        # Enhanced logging for errors
+
         if resp.status_code >= 400:
-            logger.error("proxy_auth_result", 
-                        status=resp.status_code, 
+            logger.error("proxy_auth_result",
+                        status=resp.status_code,
                         path=path,
                         response_body=resp.text[:500] if resp.text else None)
         else:
             logger.info("proxy_auth_result", status=resp.status_code, path=path)
-        
-        # Filter response headers
+
         resp_excluded = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         resp_headers = [(name, value) for (name, value) in resp.headers.items()
                         if name.lower() not in resp_excluded]
-        
+
         return (resp.content, resp.status_code, resp_headers)
     except Exception as e:
         logger.error("proxy_auth_error", error=str(e), path=path)
@@ -425,7 +470,6 @@ def proxy_auth(path):
 
 @app.route('/api/repos/webhook', methods=['POST'])
 def manage_webhook():
-    """Enable or disable webhook for a repository."""
     config = load_config()
     github_token = config.get('github_token')
 
@@ -441,7 +485,7 @@ def manage_webhook():
 
     try:
         github_service = GitHubService(github_token)
-        webhook_url = get_current_webhook_url()
+        webhook_url = build_webhook_url()
 
         if action == 'enable':
             secret = config.get('webhook_secret', '')
@@ -462,7 +506,6 @@ def manage_webhook():
 
 @app.route('/api/repos/webhook/bulk', methods=['POST'])
 def manage_webhook_bulk():
-    """Enable or disable webhooks for multiple repositories."""
     config = load_config()
     github_token = config.get('github_token')
 
@@ -478,7 +521,7 @@ def manage_webhook_bulk():
 
     try:
         github_service = GitHubService(github_token)
-        webhook_url = get_current_webhook_url()
+        webhook_url = build_webhook_url()
         secret = config.get('webhook_secret', '')
 
         if action == 'enable' and not secret:
@@ -512,7 +555,6 @@ def manage_webhook_bulk():
 
 @app.route('/api/repos/check-webhooks', methods=['POST'])
 def check_webhooks():
-    """Check webhook status for a list of repositories."""
     config = load_config()
     github_token = config.get('github_token')
 
@@ -527,7 +569,7 @@ def check_webhooks():
 
     try:
         github_service = GitHubService(github_token)
-        webhook_url = get_current_webhook_url()
+        webhook_url = build_webhook_url()
 
         results = {}
 
@@ -556,21 +598,19 @@ def check_webhooks():
 def handle_webhook():
     config = load_config()
     webhook_secret = config.get('webhook_secret')
-    
-    # Read raw data once - it can only be read once from the stream
+
     raw_data = request.data
-    
+
     if webhook_secret:
         signature = request.headers.get('X-Hub-Signature-256')
         if not verify_github_signature(raw_data, signature, webhook_secret):
             return jsonify({'error': 'Invalid signature'}), 403
-    
-    # Parse JSON from the raw data we already read
+
     try:
         data = json.loads(raw_data) if raw_data else None
     except (json.JSONDecodeError, TypeError):
         data = None
-    
+
     if not data:
         logger.warning("webhook_no_data", content_type=request.content_type, body_length=len(raw_data) if raw_data else 0)
         return jsonify({'error': 'No data provided or invalid JSON'}), 400
@@ -604,7 +644,7 @@ def handle_webhook():
     
     # Validate AI service availability
     try:
-        _ = get_ai_service(config)
+        _ = create_ai_service(config)
     except ValueError as e:
         return jsonify({'error': str(e)}), 500
     
@@ -648,23 +688,10 @@ def handle_webhook():
     created_job = create_job_atomically(repo_full_name, issue_number, job)
     if created_job is None:
         return jsonify({'message': 'Job already in progress or rate limited for this issue'}), 429
-    
-    # Enqueue the job in Redis Queue
+
     is_pr = 'pull_request' in issue or bool(issue.get('pull_request'))
-    
-    enqueue_job(
-        tasks.process_webhook_task,
-        repo_full_name=repo_full_name,
-        issue_number=issue_number,
-        issue_title=issue_title,
-        issue_body=issue_body,
-        comment_body=comment_body,
-        is_pr=is_pr,
-        current_job_id=job_id,
-        github_token=github_token,
-        config=config
-    )
-    
+    enqueue_webhook_task(job_id, repo_full_name, issue_number, issue_title, issue_body, comment_body, is_pr, github_token, config)
+
     return jsonify({
         'success': True,
         'message': 'Job enqueued successfully',
@@ -673,87 +700,47 @@ def handle_webhook():
 
 @app.route('/api/test-issue', methods=['POST'])
 def test_issue():
-    """
-    Test endpoint that processes an issue directly without needing a webhook.
-    Accepts raw issue data and runs through the same pipeline as the webhook.
-    
-    Expected JSON payload:
-    {
-        "repo": "owner/repo-name",
-        "issue_number": 123,
-        "issue_title": "Issue title",
-        "issue_body": "Issue description",
-        "comment_body": "@notsudo please fix this"
-    }
-    """
     config = load_config()
     github_token = config.get('github_token')
-    
+
     if not github_token:
         return jsonify({'error': 'Missing GitHub token'}), 500
-    
-    # Validate AI service availability
+
     try:
-        _ = get_ai_service(config)
+        _ = create_ai_service(config)
     except ValueError as e:
         return jsonify({'error': str(e)}), 500
-    
+
     data = request.get_json()
-    
+
     if not data:
         return jsonify({'error': 'No JSON data provided'}), 400
-    
+
     repo_full_name = data.get('repo')
     issue_number = data.get('issue_number')
     issue_title = data.get('issue_title', f'Test Issue #{issue_number}')
     issue_body = data.get('issue_body', '')
     comment_body = data.get('comment_body', '@notsudo')
-    
+
     if not repo_full_name:
         return jsonify({'error': 'Missing required field: repo'}), 400
-    
+
     if not issue_number:
         return jsonify({'error': 'Missing required field: issue_number'}), 400
-    
+
     logger.info(
         "test_issue_received",
         repo=repo_full_name,
         issue_number=issue_number,
         issue_title=issue_title
     )
-    
-    job = {
-        'id': f"{repo_full_name}-{issue_number}-{datetime.now().timestamp()}",
-        'repo': repo_full_name,
-        'issueNumber': issue_number,
-        'issueTitle': issue_title,
-        'status': 'processing',
-        'stage': 'analyzing',
-        'retryCount': 0,
-        'createdAt': datetime.now().isoformat(),
-        'prUrl': None,
-        'error': None,
-        'logs': ['Test job started (via /api/test-issue)'],
-        'validationLogs': []
-    }
-    save_job(job)
-    
-    # Enqueue the job in Redis Queue
+
+    job = build_webhook_job(repo_full_name, issue_number, issue_title, 'Test job started (via /api/test-issue)')
+    persist_job(job)
+
     is_pr = data.get('is_pr', False)
-    
-    enqueue_job(
-        tasks.process_webhook_task,
-        repo_full_name=repo_full_name,
-        issue_number=issue_number,
-        issue_title=issue_title,
-        issue_body=issue_body,
-        comment_body=comment_body,
-        is_pr=is_pr,
-        current_job_id=job['id'],
-        github_token=github_token,
-        config=config
-    )
-    
+    enqueue_webhook_task(job['id'], repo_full_name, issue_number, issue_title, issue_body, comment_body, is_pr, github_token, config)
+
     return jsonify({
         'success': True,
         'message': 'Test job enqueued successfully',
@@ -764,66 +751,34 @@ def test_issue():
 @app.route('/api/jobs', methods=['GET'])
 def get_jobs():
     user_id = request.args.get('user_id')
-    jobs = load_jobs(user_id=user_id)
+    jobs = fetch_jobs(user_id=user_id)
     return jsonify(jobs), 200
 
 
 @app.route('/api/jobs', methods=['POST'])
 def create_manual_job():
-    """
-    Create a manual PR generation job from a prompt.
-    """
     config = load_config()
     data = request.get_json()
-    
+
     if not data:
         return jsonify({'error': 'No data provided'}), 400
-        
+
     repo_full_name = data.get('repo')
     prompt = data.get('prompt')
     user_id = data.get('user_id')
-    
+
     if not repo_full_name or not prompt:
         return jsonify({'error': 'repo and prompt are required'}), 400
-        
+
     github_token = config.get('github_token')
     if not github_token:
         return jsonify({'error': 'GitHub token not configured'}), 500
-        
-    # Generate a job ID
+
     job_id = f"manual-{repo_full_name.replace('/', '-')}-{int(datetime.now().timestamp())}"
-    
-    # Build job data
-    job = {
-        'id': job_id,
-        'user_id': user_id,
-        'repo': repo_full_name,
-        'issueNumber': None,
-        'issueTitle': f"Manual Task: {prompt[:50]}...",
-        'status': 'processing',
-        'stage': 'analyzing',
-        'retryCount': 0,
-        'createdAt': datetime.now().isoformat(),
-        'prUrl': None,
-        'error': None,
-        'logs': ['Manual job started'],
-        'validationLogs': []
-    }
-    
-    # Save initial job state
-    save_job(job)
-    
-    # Enqueue the job in Redis Queue
-    enqueue_job(
-        tasks.process_manual_task,
-        repo_full_name=repo_full_name,
-        prompt=prompt,
-        user_id=user_id,
-        current_job_id=job_id,
-        github_token=github_token,
-        config=config
-    )
-    
+    job = build_manual_job(job_id, repo_full_name, prompt, user_id)
+    persist_job(job)
+    enqueue_manual_task(job_id, repo_full_name, prompt, user_id, github_token, config)
+
     return jsonify({
         'success': True,
         'message': 'Manual job enqueued successfully',
@@ -833,14 +788,12 @@ def create_manual_job():
 
 @app.route('/api/repos', methods=['GET'])
 def get_repos():
-    """Get all repositories accessible by the GitHub token."""
     config = load_config()
     github_token = config.get('github_token')
-    
+
     if not github_token:
         return jsonify({'error': 'GitHub token not configured'}), 500
-    
-    # Try to get from cache
+
     cache_key = f"repos_{hashlib.md5(github_token.encode()).hexdigest()}"
     cached_repos = get_cache(cache_key)
     if cached_repos:
@@ -850,10 +803,7 @@ def get_repos():
         github_service = GitHubService(github_token)
         repos = github_service.get_available_repos()
         response_data = {'repos': repos, 'count': len(repos)}
-        
-        # Cache for 10 minutes
-        set_cache(cache_key, json.dumps(response_data), expire=600)
-        
+        set_cache(cache_key, json.dumps(response_data), expire=CACHE_TTL_SECONDS)
         return jsonify(response_data), 200
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -864,7 +814,6 @@ def get_repos():
 
 @app.route('/api/repos/<path:repo_full_name>/issues', methods=['GET'])
 def get_repo_issues(repo_full_name):
-    """Get issues for a specific repository."""
     config = load_config()
     github_token = config.get('github_token')
 
@@ -884,7 +833,6 @@ def get_repo_issues(repo_full_name):
 
 @app.route('/api/repos/<path:repo_full_name>/memory', methods=['GET'])
 def get_repo_memory(repo_full_name):
-    """Get memory for a specific repository."""
     config = load_config()
     github_token = config.get('github_token')
 
@@ -907,7 +855,6 @@ def get_repo_memory(repo_full_name):
 
 @app.route('/api/repos/<path:repo_full_name>/memory', methods=['POST'])
 def save_repo_memory(repo_full_name):
-    """Save memory for a specific repository."""
     config = load_config()
     github_token = config.get('github_token')
 
@@ -922,19 +869,7 @@ def save_repo_memory(repo_full_name):
         github_service = GitHubService(github_token)
         repo = github_service.get_repository(repo_full_name)
         repo_id = str(repo.id)
-
-        # Ensure repository exists in local DB (required for FK)
-        # We need user_id to insert a repository. Try to get it from request.
         user_id = data.get('userId') or data.get('user_id')
-
-        # If user_id is not provided, we check if the repo already exists
-        if not user_id:
-             # Check if repo exists
-            repos = database.get_repositories_by_id(repo_id) # Need to implement this or query directly?
-            # Actually database.get_repositories(user_id) exists.
-            # I'll rely on the repo already existing if user_id is not provided.
-            # If it doesn't exist and no user_id, we can't insert it -> FK failure for memory.
-            pass
 
         if user_id:
             database.insert_repository({
@@ -952,8 +887,7 @@ def save_repo_memory(repo_full_name):
         result = database.insert_or_update_codebase_memory(repo_id, data['memory'])
         if result:
             return jsonify(result), 200
-        else:
-            return jsonify({'error': 'Failed to save memory (Repository might not exist in DB)'}), 500
+        return jsonify({'error': 'Failed to save memory (Repository might not exist in DB)'}), 500
 
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -964,8 +898,7 @@ def save_repo_memory(repo_full_name):
 
 @app.route('/api/jobs/<path:job_id>/logs', methods=['GET'])
 def get_job_logs(job_id):
-    """Get detailed logs for a specific job."""
-    jobs = load_jobs()
+    jobs = fetch_jobs()
     for job in jobs:
         if job.get('id') == job_id:
             return jsonify({
@@ -980,7 +913,6 @@ def get_job_logs(job_id):
 
 @app.route('/api/jobs/<path:job_id>/feed', methods=['GET'])
 def get_job_feed(job_id):
-    """Get structured logs (feed) for a specific job."""
     logs = database.get_job_logs(job_id)
     return jsonify({
         'jobId': job_id,
@@ -990,16 +922,13 @@ def get_job_feed(job_id):
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint to verify deployment status."""
     config = load_config()
-    
-    # Check required environment variables
+
     checks = {
         'github_token': bool(config.get('github_token')),
         'groq_key': bool(config.get('groq_key')),
     }
-    
-    # Verify GitHub scopes if token exists
+
     github_scopes = None
     if checks['github_token']:
         try:
@@ -1008,15 +937,12 @@ def health_check():
             github_scopes = scope_info
             if not scope_info.get('valid'):
                 checks['github_api'] = False
-            elif not scope_info.get('has_repo_scope'):
-                # We don't mark it as unhealthy, but we report it
-                pass
         except Exception as e:
             checks['github_api'] = False
             logger.error("health_check_github_failed", error=str(e))
 
     all_healthy = all(checks.values())
-    
+
     response = {
         'status': 'healthy' if all_healthy else 'degraded',
         'timestamp': datetime.now().isoformat(),
@@ -1033,17 +959,6 @@ def health_check():
 
 @app.route('/api/test-sandbox', methods=['POST'])
 def test_sandbox():
-    """
-    Test endpoint that runs a simple task in AWS sandbox without AI.
-    Useful for testing the full AWS ECS Fargate flow.
-    
-    Expected JSON payload (all optional):
-    {
-        "code": "print('Hello World')",  # Python code to run (defaults to simple test)
-        "stack": "python"  # or "nodejs"
-    }
-    """
-    # Check if AWS sandbox is enabled
     if not os.environ.get('USE_AWS_SANDBOX'):
         return jsonify({
             'error': 'AWS sandbox not enabled. Set USE_AWS_SANDBOX=true in .env'
@@ -1051,8 +966,7 @@ def test_sandbox():
     
     data = request.get_json() or {}
     stack = data.get('stack', 'python')
-    
-    # Default test code based on stack
+
     if stack == 'python':
         default_code = '''
 # Simple test script
@@ -1114,8 +1028,7 @@ console.log("=".repeat(50));
 '''
     
     code = data.get('code', default_code)
-    
-    # Prepare code files
+
     if stack == 'python':
         code_files = [
             {'path': 'main.py', 'content': code},
@@ -1130,19 +1043,14 @@ console.log("=".repeat(50));
         ]
         install_cmd = 'npm install 2>/dev/null || true'
         test_cmd = 'node index.js'
-    
-    logger.info(
-        "test_sandbox_started",
-        stack=stack,
-        file_count=len(code_files),
-    )
-    
+
+    logger.info("test_sandbox_started", stack=stack, file_count=len(code_files))
+
     try:
         from services.aws_sandbox import AWSSandboxService
-        
+
         sandbox = AWSSandboxService()
-        
-        # Check if sandbox is accessible
+
         if not sandbox.is_available():
             return jsonify({
                 'error': 'AWS sandbox not accessible. Check your AWS credentials and configuration.',
@@ -1152,15 +1060,14 @@ console.log("=".repeat(50));
                     'bucket': sandbox.config.s3_bucket,
                 }
             }), 500
-        
-        # Run the validation
+
         result = sandbox.run_validation(
             code_files=code_files,
             stack_type=stack,
             install_command=install_cmd,
             test_command=test_cmd,
         )
-        
+
         return jsonify({
             'success': result.success,
             'exit_code': result.exit_code,
@@ -1170,7 +1077,7 @@ console.log("=".repeat(50));
             'stderr': result.stderr,
             'task_arn': result.task_arn,
         }), 200 if result.success else 500
-        
+
     except Exception as e:
         logger.error("test_sandbox_failed", error=str(e))
         return jsonify({
@@ -1178,15 +1085,9 @@ console.log("=".repeat(50));
             'type': type(e).__name__,
         }), 500
 
-# =====================
-# Authentication Routes
-# =====================
-# NOTE: Authentication is now handled by Better Auth on the frontend.
-# These routes are kept for backward compatibility but will redirect.
 
 @app.route('/api/auth/signup', methods=['POST'])
 def auth_signup():
-    """Auth now handled by Better Auth on frontend."""
     return jsonify({
         'error': 'Please use the frontend authentication. Visit /login to sign up with GitHub.'
     }), 410
@@ -1194,7 +1095,6 @@ def auth_signup():
 
 @app.route('/api/auth/login', methods=['POST'])
 def auth_login():
-    """Auth now handled by Better Auth on frontend."""
     return jsonify({
         'error': 'Please use the frontend authentication. Visit /login to sign in with GitHub.'
     }), 410
@@ -1202,37 +1102,29 @@ def auth_login():
 
 @app.route('/api/auth/logout', methods=['POST'])
 def auth_logout():
-    """Auth now handled by Better Auth on frontend."""
     return jsonify({'message': 'Use frontend /api/auth/signout for logout'}), 410
 
 
 @app.route('/api/auth/user', methods=['GET'])
 def auth_user():
-    """Auth now handled by Better Auth on frontend."""
     return jsonify({
         'error': 'Please use the frontend /api/auth/session to get user info.'
     }), 410
 
 
-# =====================
-# GitHub App Routes
-# =====================
-
 @app.route('/api/github-app/status', methods=['GET'])
 def github_app_status():
-    """Check if GitHub App is configured and get installation URL."""
     from services.github_app import get_github_app_service
-    
+
     try:
         app_service = get_github_app_service()
-        
+
         if not app_service.is_configured():
             return jsonify({
                 'configured': False,
                 'message': 'GitHub App is not configured. Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY in your environment.'
             }), 200
-        
-        # Try to get app info
+
         try:
             app_info = app_service.get_app_info()
             install_url = app_service.get_installation_url()
@@ -1249,7 +1141,7 @@ def github_app_status():
                 'configured': True,
                 'error': str(e)
             }), 200
-            
+
     except Exception as e:
         logger.error("github_app_status_failed", error=str(e))
         return jsonify({'error': str(e)}), 500
@@ -1257,17 +1149,16 @@ def github_app_status():
 
 @app.route('/api/github-app/installations', methods=['GET'])
 def get_github_app_installations():
-    """Get all installations of the GitHub App."""
     from services.github_app import get_github_app_service
-    
+
     try:
         app_service = get_github_app_service()
-        
+
         if not app_service.is_configured():
             return jsonify({'error': 'GitHub App not configured'}), 400
-        
+
         installations = app_service.list_installations()
-        
+
         return jsonify({
             'installations': [{
                 'id': inst.get('id'),
@@ -1279,7 +1170,7 @@ def get_github_app_installations():
             } for inst in installations],
             'count': len(installations)
         }), 200
-        
+
     except Exception as e:
         logger.error("get_installations_failed", error=str(e))
         return jsonify({'error': str(e)}), 500
@@ -1287,17 +1178,16 @@ def get_github_app_installations():
 
 @app.route('/api/github-app/installations/<int:installation_id>/repos', methods=['GET'])
 def get_installation_repos(installation_id):
-    """Get repositories for a specific installation."""
     from services.github_app import get_github_app_service
-    
+
     try:
         app_service = get_github_app_service()
-        
+
         if not app_service.is_configured():
             return jsonify({'error': 'GitHub App not configured'}), 400
-        
+
         repos = app_service.get_installation_repos(installation_id)
-        
+
         return jsonify({
             'repos': [{
                 'id': str(repo.get('id')),
@@ -1311,7 +1201,7 @@ def get_installation_repos(installation_id):
             } for repo in repos],
             'count': len(repos)
         }), 200
-        
+
     except Exception as e:
         logger.error("get_installation_repos_failed", error=str(e), installation_id=installation_id)
         return jsonify({'error': str(e)}), 500
@@ -1319,79 +1209,58 @@ def get_installation_repos(installation_id):
 
 @app.route('/api/github-app/webhook', methods=['POST'])
 def handle_github_app_webhook():
-    """
-    Handle webhooks from GitHub App.
-    This receives installation events and issue comment events.
-    """
     from services.github_app import get_github_app_service
-    
+
     raw_data = request.data
     signature = request.headers.get('X-Hub-Signature-256')
     event_type = request.headers.get('X-GitHub-Event')
-    
+
     app_service = get_github_app_service()
-    
-    # Verify signature if webhook secret is configured
+
     if app_service.webhook_secret:
         if not app_service.verify_webhook_signature(raw_data, signature):
             logger.warning("github_app_webhook_invalid_signature")
             return jsonify({'error': 'Invalid signature'}), 403
-    
+
     try:
         data = json.loads(raw_data) if raw_data else None
     except (json.JSONDecodeError, TypeError):
         return jsonify({'error': 'Invalid JSON'}), 400
-    
+
     if not data:
         return jsonify({'error': 'No data provided'}), 400
     
     action = data.get('action')
-    
-    logger.info(
-        "github_app_webhook_received",
-        event_type=event_type,
-        action=action
-    )
-    
-    # Handle installation events
+
+    logger.info("github_app_webhook_received", event_type=event_type, action=action)
+
     if event_type == 'installation':
         return handle_installation_event(data, action)
-    
-    # Handle installation_repositories events (when repos are added/removed)
+
     if event_type == 'installation_repositories':
         return handle_installation_repos_event(data, action)
-    
-    # Handle issue_comment events (same as before, but from app)
+
     if event_type == 'issue_comment':
         return handle_issue_comment_from_app(data, action)
-    
-    # Ignore other events
+
     return jsonify({'message': f'Event {event_type} ignored'}), 200
 
 
 def handle_installation_event(data, action):
-    """Handle GitHub App installation/uninstallation events."""
     installation = data.get('installation', {})
-    
     installation_id = str(installation.get('id'))
     account = installation.get('account', {})
-    
-    logger.info(
-        "installation_event",
-        action=action,
-        installation_id=installation_id,
-        account=account.get('login')
-    )
-    
+
+    logger.info("installation_event", action=action, installation_id=installation_id, account=account.get('login'))
+
     if action in ['created', 'new_permissions_accepted']:
-        # Store installation in database
         if database.is_db_available():
             from services.models import GitHubAppInstallation
             from services.db import get_db_session
-            
+
             with get_db_session() as session:
                 existing = session.query(GitHubAppInstallation).filter_by(id=installation_id).first()
-                
+
                 if existing:
                     existing.repository_selection = installation.get('repository_selection', 'all')
                     existing.suspended_at = None
@@ -1410,28 +1279,27 @@ def handle_installation_event(data, action):
                         app_id=installation.get('app_id')
                     )
                     session.add(new_installation)
-                
+
                 session.commit()
-        
+
         return jsonify({'message': 'Installation recorded'}), 200
-    
-    elif action == 'deleted':
-        # Remove installation from database
+
+    if action == 'deleted':
         if database.is_db_available():
             from services.models import GitHubAppInstallation
             from services.db import get_db_session
-            
+
             with get_db_session() as session:
                 session.query(GitHubAppInstallation).filter_by(id=installation_id).delete()
                 session.commit()
-        
+
         return jsonify({'message': 'Installation removed'}), 200
-    
-    elif action == 'suspended':
+
+    if action == 'suspended':
         if database.is_db_available():
             from services.models import GitHubAppInstallation
             from services.db import get_db_session
-            
+
             with get_db_session() as session:
                 existing = session.query(GitHubAppInstallation).filter_by(id=installation_id).first()
                 if existing:
@@ -1444,13 +1312,12 @@ def handle_installation_event(data, action):
 
 
 def handle_installation_repos_event(data, action):
-    """Handle when repositories are added/removed from an installation."""
     installation = data.get('installation', {})
     installation_id = str(installation.get('id'))
-    
+
     repos_added = data.get('repositories_added', [])
     repos_removed = data.get('repositories_removed', [])
-    
+
     logger.info(
         "installation_repos_event",
         action=action,
@@ -1458,8 +1325,7 @@ def handle_installation_repos_event(data, action):
         repos_added=len(repos_added),
         repos_removed=len(repos_removed)
     )
-    
-    # For now, just log it - repos are fetched dynamically when needed
+
     return jsonify({
         'message': 'Repository changes recorded',
         'added': len(repos_added),
@@ -1468,32 +1334,30 @@ def handle_installation_repos_event(data, action):
 
 
 def handle_issue_comment_from_app(data, action):
-    """Handle issue comments from GitHub App webhook."""
     if action != 'created':
         return jsonify({'message': 'Ignored: not a comment creation'}), 200
-    
+
     comment = data.get('comment', {})
     issue = data.get('issue', {})
     repository = data.get('repository', {})
     installation = data.get('installation', {})
-    
+
     comment_body = comment.get('body', '')
-    
+
     if '@notsudo' not in comment_body:
         return jsonify({'message': 'Ignored: @notsudo not mentioned'}), 200
-    
+
     repo_full_name = repository.get('full_name')
     issue_number = issue.get('number')
     issue_title = issue.get('title')
     issue_body = issue.get('body', '')
     installation_id = installation.get('id')
-    
+
     if not repo_full_name or not issue_number:
         return jsonify({'error': 'Missing repo or issue info'}), 400
-    
-    # Get installation access token first (before creating job)
+
     from services.github_app import get_github_app_service
-    
+
     try:
         app_service = get_github_app_service()
         token_data = app_service.get_installation_access_token(installation_id)
@@ -1501,47 +1365,21 @@ def handle_issue_comment_from_app(data, action):
     except Exception as e:
         logger.error("failed_to_get_installation_token", error=str(e))
         return jsonify({'error': 'Failed to get installation token'}), 500
-    
+
     groq_key = load_config().get('groq_key')
-    
+
     if not groq_key:
         return jsonify({'error': 'GROQ API key not configured'}), 500
-    
-    # Build job data
-    job = {
-        'id': f"{repo_full_name}-{issue_number}-{datetime.now().timestamp()}",
-        'repo': repo_full_name,
-        'issueNumber': issue_number,
-        'issueTitle': issue_title,
-        'status': 'processing',
-        'stage': 'analyzing',
-        'retryCount': 0,
-        'createdAt': datetime.now().isoformat(),
-        'prUrl': None,
-        'error': None,
-        'logs': ['Job started via GitHub App webhook'],
-        'validationLogs': []
-    }
-    
-    # Atomically check for duplicates and create job
+
+    job = build_webhook_job(repo_full_name, issue_number, issue_title, 'Job started via GitHub App webhook')
+
     created_job = create_job_atomically(repo_full_name, issue_number, job)
     if created_job is None:
         return jsonify({'message': 'Job already in progress or rate limited'}), 429
-    
-    # Enqueue the job in Redis Queue
-    enqueue_job(
-        tasks.process_webhook_task,
-        repo_full_name=repo_full_name,
-        issue_number=issue_number,
-        issue_title=issue_title,
-        issue_body=issue_body,
-        comment_body=comment_body,
-        is_pr='pull_request' in issue or bool(issue.get('pull_request')),
-        current_job_id=job['id'],
-        github_token=github_token,
-        config=load_config()
-    )
-    
+
+    is_pr = 'pull_request' in issue or bool(issue.get('pull_request'))
+    enqueue_webhook_task(job['id'], repo_full_name, issue_number, issue_title, issue_body, comment_body, is_pr, github_token, load_config())
+
     return jsonify({
         'success': True,
         'message': 'Job enqueued successfully',
@@ -1549,16 +1387,10 @@ def handle_issue_comment_from_app(data, action):
     }), 202
 
 
-# =====================
-# Stats Route
-# =====================
-
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
-    """Get job and issue statistics."""
     if not database.is_db_available():
-        # Return stats from JSON file fallback
-        jobs = load_jobs()
+        jobs = fetch_jobs()
         return jsonify({
             'total_jobs': len(jobs),
             'completed_jobs': len([j for j in jobs if j.get('status') == 'completed']),
@@ -1567,13 +1399,12 @@ def get_stats():
             'total_issues': 0,
             'total_repos': 0
         }), 200
-    
-    # Get stats from database
+
     stats = database.get_stats()
-    
+
     if 'error' in stats:
         return jsonify(stats), 500
-    
+
     return jsonify(stats), 200
 
 
