@@ -305,6 +305,7 @@ I built NotSudo end-to-end — from the AI agent pipeline and cloud sandbox infr
 
 **I'm open to work.** If you're hiring for Full Stack, Cloud, AI/LLM, or DevOps roles — I'd love to connect.
 
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Ashok_Reddy-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://linkedin.com/in/ashok-reddy-kakumanu-8a3078247)
 [![Email](https://img.shields.io/badge/Email-kakumanuashokreddyias2024@gmail.com-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:kakumanuashokreddyias2024@gmail.com)
 [![GitHub](https://img.shields.io/badge/GitHub-ashokDevs-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/ashokDevs)
 
