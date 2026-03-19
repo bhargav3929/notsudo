@@ -921,8 +921,17 @@ def get_job_feed(job_id):
     }), 200
 
 
+_health_cache = {'result': None, 'expires': 0}
+
 @app.route('/health', methods=['GET'])
 def health_check():
+    import time
+    now = time.time()
+
+    # Cache health check result for 60s to avoid hammering GitHub API
+    if _health_cache['result'] and now < _health_cache['expires']:
+        return jsonify(_health_cache['result']), 200
+
     config = load_config()
 
     checks = {
@@ -955,9 +964,9 @@ def health_check():
     if github_scopes:
         response['github_scopes'] = github_scopes
 
-    # Always return 200 for the liveness probe — external credential issues
-    # should not prevent the service from being considered alive by the
-    # load balancer / platform health check.
+    _health_cache['result'] = response
+    _health_cache['expires'] = now + 60
+
     return jsonify(response), 200
 
 
