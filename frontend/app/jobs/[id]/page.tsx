@@ -341,7 +341,7 @@ export default function JobDetailPage() {
                      ))}
                    </div>
 
-                   <div className="flex-1 overflow-auto bg-[#0a0a0a] relative group border-t border-zinc-800/20">
+                   <div className="flex-1 overflow-auto bg-[#0d1117] relative group border-t border-zinc-800/20">
                      <ReactDiffViewer
                        oldValue=""
                        newValue={selectedFileContent}
@@ -350,21 +350,35 @@ export default function JobDetailPage() {
                        styles={{
                          variables: {
                            dark: {
-                             diffViewerBackground: 'transparent',
-                             diffViewerColor: '#a1a1aa',
-                             addedBackground: 'rgba(16, 185, 129, 0.05)',
-                             addedColor: '#10b981',
-                             wordAddedBackground: 'rgba(16, 185, 129, 0.1)',
-                             removedBackground: 'rgba(239, 68, 68, 0.05)',
-                             removedColor: '#ef4444',
-                             wordRemovedBackground: 'rgba(239, 68, 68, 0.1)',
-                             gutterBackground: 'transparent',
-                             gutterColor: '#3f3f46',
+                             diffViewerBackground: '#0d1117',
+                             diffViewerColor: '#e6edf3',
+                             addedBackground: '#12261e',
+                             addedColor: '#7ee787',
+                             addedGutterBackground: '#0f2d1a',
+                             wordAddedBackground: '#1a4721',
+                             removedBackground: '#2d1214',
+                             removedColor: '#ff7b72',
+                             removedGutterBackground: '#3c1618',
+                             wordRemovedBackground: '#5d1214',
+                             gutterBackground: '#0d1117',
+                             gutterColor: '#484f58',
+                             codeFoldBackground: '#161b22',
+                             codeFoldGutterBackground: '#161b22',
+                             codeFoldContentColor: '#8b949e',
+                             emptyLineBackground: '#0d1117',
                            }
                          },
                          line: {
-                            fontFamily: 'var(--font-modern), Menlo, monospace',
+                            fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
                             fontSize: '13px',
+                            lineHeight: '20px',
+                         },
+                         gutter: {
+                            minWidth: '50px',
+                            padding: '0 10px',
+                         },
+                         contentText: {
+                            padding: '0 12px',
                          }
                        }}
                      />
