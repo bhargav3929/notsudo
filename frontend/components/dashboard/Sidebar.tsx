@@ -228,7 +228,7 @@ export function Sidebar({ isMobileOpen, setIsMobileOpen, isCollapsed, setIsColla
               {filteredJobs.map((job) => (
                 <Link 
                   key={job.id} 
-                  href={`/dashboard?job_id=${job.id}`}
+                  href={`/jobs/${job.id}`}
                   className="group flex items-center gap-3 py-2 px-2 hover:bg-white/5 rounded-lg transition-all"
                 >
                   <div className="shrink-0">
