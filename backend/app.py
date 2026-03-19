@@ -17,7 +17,8 @@ from flask_socketio import SocketIO, join_room, leave_room
 
 import tasks
 from services import db as database
-from services.ai_service import AIService, AVAILABLE_MODELS, DEFAULT_MODEL
+from services.ai_service import AIService, DEFAULT_MODEL
+from services.shared import AVAILABLE_MODELS
 from services.github_service import GitHubService
 from services.groq_service import GroqService
 from services.redis_service import (
