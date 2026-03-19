@@ -342,46 +342,16 @@ export default function JobDetailPage() {
                    </div>
 
                    <div className="flex-1 overflow-auto bg-[#0d1117] relative group border-t border-zinc-800/20">
-                     <ReactDiffViewer
-                       oldValue=""
-                       newValue={selectedFileContent}
-                       splitView={false}
-                       useDarkTheme={true}
-                       styles={{
-                         variables: {
-                           dark: {
-                             diffViewerBackground: '#0d1117',
-                             diffViewerColor: '#e6edf3',
-                             addedBackground: '#12261e',
-                             addedColor: '#7ee787',
-                             addedGutterBackground: '#0f2d1a',
-                             wordAddedBackground: '#1a4721',
-                             removedBackground: '#2d1214',
-                             removedColor: '#ff7b72',
-                             removedGutterBackground: '#3c1618',
-                             wordRemovedBackground: '#5d1214',
-                             gutterBackground: '#0d1117',
-                             gutterColor: '#484f58',
-                             codeFoldBackground: '#161b22',
-                             codeFoldGutterBackground: '#161b22',
-                             codeFoldContentColor: '#8b949e',
-                             emptyLineBackground: '#0d1117',
-                           }
-                         },
-                         line: {
-                            fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-                            fontSize: '13px',
-                            lineHeight: '20px',
-                         },
-                         gutter: {
-                            minWidth: '50px',
-                            padding: '0 10px',
-                         },
-                         contentText: {
-                            padding: '0 12px',
-                         }
-                       }}
-                     />
+                     <pre className="p-0 m-0">
+                       <code className="block text-[13px] leading-[20px]" style={{ fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' }}>
+                         {selectedFileContent.split('\n').map((line, i) => (
+                           <div key={i} className="flex hover:bg-[#161b22] transition-colors">
+                             <span className="select-none text-[#484f58] text-right min-w-[50px] px-[10px] py-0 inline-block">{i + 1}</span>
+                             <span className="text-[#e6edf3] px-3 flex-1">{line || ' '}</span>
+                           </div>
+                         ))}
+                       </code>
+                     </pre>
                    </div>
                  </>
                )}
