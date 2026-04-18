@@ -519,7 +519,7 @@ Analyze the errors and provide fixed versions of the files using edit_file."""
         if job_id:
             db.insert_job_log({
                 'job_id': job_id,
-                'role': 'user',
+                'role': 'system',
                 'type': 'message',
                 'content': f"**Fixing Test Failures**\n\nErrors:\n```\n{error_logs[-1000:]}\n```",
                 'metadata': {'original_changes_count': len(original_changes)}
