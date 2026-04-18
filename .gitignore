@@ -1,3 +1,6 @@
+# Private keys
+*.pem
+
 # Python
 __pycache__/
 *.py[cod]
@@ -62,3 +65,6 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Personal / private notes
+prep-for-interview.md

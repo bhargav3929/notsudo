@@ -9,6 +9,14 @@ if [ -d "venv" ]; then
     source venv/bin/activate
 fi
 
+# macOS fork-safety: RQ forks per job; the child crashes inside CoreFoundation
+# (via _scproxy proxy lookup) because ObjC isn't fork-safe. These two vars
+# disable the ObjC post-fork assertion and skip the macOS proxy lookup.
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+    export NO_PROXY="*"
+fi
+
 # Start ngrok in background if available
 if command -v ngrok &> /dev/null; then
     echo "Starting ngrok tunnel..."

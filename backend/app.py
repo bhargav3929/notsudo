@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ MAX_EXECUTOR_WORKERS = 10
 MAX_STORED_JOBS = 100
 CACHE_TTL_SECONDS = 600
 RATE_LIMIT_WINDOW_SECONDS = 60
+HEALTH_CACHE_TTL_SECONDS = 60
 
 logger = get_logger(__name__)
 executor = ThreadPoolExecutor(max_workers=MAX_EXECUTOR_WORKERS)
@@ -921,16 +923,38 @@ def get_job_feed(job_id):
     }), 200
 
 
-_health_cache = {'result': None, 'expires': 0}
+_HEALTH_CACHE = {'result': None, 'expires': 0}
+
+
+def _get_cached_health_result():
+    """Returns cached result if still valid, otherwise None."""
+    if _HEALTH_CACHE['result'] and time.time() < _HEALTH_CACHE['expires']:
+        return _HEALTH_CACHE['result']
+    return None
+
+
+def _update_health_cache(response):
+    _HEALTH_CACHE['result'] = response
+    _HEALTH_CACHE['expires'] = time.time() + HEALTH_CACHE_TTL_SECONDS
+
+
+def _check_github_scopes(token):
+    """Verifies GitHub token scopes; returns (scopes_info, is_api_healthy)."""
+    try:
+        github_service = GitHubService(token)
+        scope_info = github_service.verify_token_scopes()
+        is_healthy = scope_info.get('valid', True)
+        return scope_info, is_healthy
+    except Exception as e:
+        logger.error("health_check_github_failed", error=str(e))
+        return None, False
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    import time
-    now = time.time()
-
-    # Cache health check result for 60s to avoid hammering GitHub API
-    if _health_cache['result'] and now < _health_cache['expires']:
-        return jsonify(_health_cache['result']), 200
+    cached = _get_cached_health_result()
+    if cached:
+        return jsonify(cached), 200
 
     config = load_config()
 
@@ -941,15 +965,9 @@ def health_check():
 
     github_scopes = None
     if checks['github_token']:
-        try:
-            github_service = GitHubService(config.get('github_token'))
-            scope_info = github_service.verify_token_scopes()
-            github_scopes = scope_info
-            if not scope_info.get('valid'):
-                checks['github_api'] = False
-        except Exception as e:
+        github_scopes, github_api_healthy = _check_github_scopes(config.get('github_token'))
+        if not github_api_healthy:
             checks['github_api'] = False
-            logger.error("health_check_github_failed", error=str(e))
 
     all_healthy = all(checks.values())
 
@@ -964,8 +982,7 @@ def health_check():
     if github_scopes:
         response['github_scopes'] = github_scopes
 
-    _health_cache['result'] = response
-    _health_cache['expires'] = now + 60
+    _update_health_cache(response)
 
     return jsonify(response), 200
 

@@ -5,7 +5,6 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, FileCode, Terminal, Cpu, Zap, Loader2, AlertCircle, User, ExternalLink, GitPullRequest } from 'lucide-react';
 import Image from 'next/image';
-import ReactDiffViewer from 'react-diff-viewer-continued';
 import { cn } from '@/lib/utils';
 import { useSession } from '@/lib/auth-client';
 import { getSocket } from '@/lib/socket';
@@ -48,6 +47,27 @@ function formatMarkdown(text: string): string {
     .replace(/\n/g, '<br />');
 }
 
+function isFileChangeEntry(log: JobLogEntry): boolean {
+  return (log.type === 'file_change' || !!log.metadata?.file_path) && !!log.metadata?.new_content;
+}
+
+function toFileChange(log: JobLogEntry): FileChange {
+  return {
+    path: log.metadata!.file_path as string,
+    content: log.metadata!.new_content as string,
+    reason: log.content,
+    timestamp: log.createdAt,
+  };
+}
+
+function renderLogIcon(log: JobLogEntry) {
+  if (log.type === 'command') return <Terminal className="w-4 h-4" />;
+  if (log.type === 'file_change') return <FileCode className="w-4 h-4" />;
+  if (log.type === 'error') return <AlertCircle className="w-4 h-4" />;
+  if (log.role === 'user') return <User className="w-4 h-4" />;
+  return <Cpu className="w-4 h-4" />;
+}
+
 export default function JobDetailPage() {
   const params = useParams();
   const jobId = params.id as string;
@@ -75,16 +95,11 @@ export default function JobDetailPage() {
           const changes: FileChange[] = [];
           const seenPaths = new Set<string>();
 
-          [...(data.entries || [])].reverse().forEach((log: JobLogEntry) => {
-            if ((log.type === 'file_change' || log.metadata?.file_path) && log.metadata?.new_content) {
-              const path = log.metadata.file_path as string;
+          [...(data.entries || [])].reverse().forEach(function deduplicateFileChanges(log: JobLogEntry) {
+            if (isFileChangeEntry(log)) {
+              const path = log.metadata!.file_path as string;
               if (!seenPaths.has(path)) {
-                changes.push({
-                  path,
-                  content: log.metadata.new_content,
-                  reason: log.content,
-                  timestamp: log.createdAt
-                });
+                changes.push(toFileChange(log));
                 seenPaths.add(path);
               }
             }
@@ -106,46 +121,39 @@ export default function JobDetailPage() {
 
     socket.emit('join_job', { jobId });
 
-    socket.on('job_log', (data: { jobId: string; entry: JobLogEntry }) => {
-      if (data.jobId === jobId) {
-        setLogs(prev => {
-          if (prev.some(l => l.id === data.entry.id)) return prev;
-          return [...prev, data.entry];
-        });
+    function handleJobLog(data: { jobId: string; entry: JobLogEntry }) {
+      if (data.jobId !== jobId) return;
 
-        const log = data.entry;
-        if ((log.type === 'file_change' || log.metadata?.file_path) && log.metadata?.new_content) {
-          const path = log.metadata.file_path as string;
-          setFileChanges(prev => {
-            const index = prev.findIndex(f => f.path === path);
-            const newChange: FileChange = {
-              path,
-              content: log.metadata?.new_content as string,
-              reason: log.content,
-              timestamp: log.createdAt
-            };
+      setLogs(function appendIfNew(prev) {
+        if (prev.some(l => l.id === data.entry.id)) return prev;
+        return [...prev, data.entry];
+      });
 
-            if (index !== -1) {
-              const updated = [...prev];
-              updated[index] = newChange;
-              return updated;
-            } else {
-              if (!selectedFile) setSelectedFile(path);
-              return [...prev, newChange];
-            }
-          });
+      const log = data.entry;
+      if (!isFileChangeEntry(log)) return;
+
+      const path = log.metadata!.file_path as string;
+      const newChange = toFileChange(log);
+
+      setFileChanges(function upsertChange(prev) {
+        const index = prev.findIndex(f => f.path === path);
+        if (index !== -1) {
+          const updated = [...prev];
+          updated[index] = newChange;
+          return updated;
         }
-      }
-    });
+        if (!selectedFile) setSelectedFile(path);
+        return [...prev, newChange];
+      });
+    }
 
-    socket.on('job_status', () => {
-      // Status updates are reflected in logs
-    });
+    socket.on('job_log', handleJobLog);
+    socket.on('job_status', function noop() {});
 
-    return () => {
+    return function cleanup() {
       isMounted = false;
       socket.emit('leave_job', { jobId });
-      socket.off('job_log');
+      socket.off('job_log', handleJobLog);
       socket.off('job_status');
     };
   }, [jobId, selectedFile]);
@@ -169,21 +177,10 @@ export default function JobDetailPage() {
                <span className="font-bold text-lg tracking-tight">notsudo</span>
             </Link>
             <div className="h-4 w-[1px] bg-zinc-800 mx-2" />
-            <div className="flex items-center gap-2 px-3 py-1 bg-orange-500/5 border border-orange-500/10 rounded-full">
-              <div className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse" />
-              <span className="text-[10px] font-bold text-orange-400 uppercase tracking-widest">Live Stream</span>
-            </div>
             <span className="text-zinc-500 text-xs font-medium uppercase tracking-widest">Job #{jobId.split('-')[1] || jobId.substring(0,8)}</span>
           </div>
 
           <div className="flex items-center gap-4">
-             <div className="flex items-center gap-2 bg-emerald-500/10 px-3 py-1.5 border border-emerald-500/20 rounded-lg">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="text-[10px] font-bold text-emerald-500 uppercase">Streaming live</span>
-             </div>
-             
-             <div className="w-px h-6 bg-zinc-800 mx-2" />
-
              {session?.user && (
                <div className="w-8 h-8 rounded-full border border-zinc-800 overflow-hidden bg-zinc-900 flex items-center justify-center">
                  {session.user.image ? (
@@ -197,7 +194,6 @@ export default function JobDetailPage() {
         </header>
 
         <div className="flex-1 flex overflow-hidden">
-          {/* Activity Feed Panel - LEFT */}
           <div className="w-1/2 flex flex-col border-r border-zinc-800/50 bg-zinc-900/5">
             <div className="p-4 border-b border-zinc-800/50 flex items-center justify-between bg-zinc-900/20">
               <div className="flex items-center gap-3">
@@ -230,11 +226,7 @@ export default function JobDetailPage() {
                           "w-8 h-8 rounded-lg flex items-center justify-center border transition-all",
                           log.role === 'user' ? "bg-zinc-900 border-zinc-800 text-zinc-500" : "bg-orange-600/10 border-orange-500/20 text-orange-500"
                         )}>
-                          {log.type === 'command' ? <Terminal className="w-4 h-4" /> :
-                           log.type === 'file_change' ? <FileCode className="w-4 h-4" /> :
-                           log.type === 'error' ? <AlertCircle className="w-4 h-4" /> :
-                           log.role === 'user' ? <User className="w-4 h-4" /> :
-                           <Cpu className="w-4 h-4" />}
+                          {renderLogIcon(log)}
                         </div>
                       </div>
 
@@ -339,7 +331,6 @@ export default function JobDetailPage() {
             </div>
           </div>
 
-          {/* File Changes Panel - RIGHT */}
           <div className="w-1/2 flex flex-col bg-zinc-900/10">
             <div className="p-4 border-b border-zinc-800/50 flex items-center justify-between bg-zinc-900/20">
               <div className="flex items-center gap-3">
