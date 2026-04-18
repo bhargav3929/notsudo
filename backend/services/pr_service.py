@@ -207,12 +207,27 @@ class PRService:
 
         if not file_changes:
             logger.warning("no_file_changes_suggested", issue_number=issue_number)
+            analysis = ai_result.get('analysis') or 'No analysis provided.'
             if issue_number:
                 self.github_service.add_issue_comment(
                     repo,
                     issue_number,
-                    f"ℹ️ **Analysis Complete**\n\nI analyzed the issue but couldn't determine any necessary code changes.\n\n**Analysis:**\n{ai_result.get('analysis')}"
+                    f"ℹ️ **Analysis Complete**\n\nI analyzed the issue but couldn't determine any necessary code changes.\n\n**Analysis:**\n{analysis}"
                 )
+            if job_id:
+                db.insert_job_log({
+                    'job_id': job_id,
+                    'role': 'system',
+                    'type': 'terminal',
+                    'content': (
+                        "❌ **Job failed** — the AI analyzed the request but did not "
+                        "suggest any code changes. This usually means the prompt was "
+                        "too vague, the relevant files weren't in context, or the "
+                        "model decided no change was warranted.\n\n"
+                        f"**Analysis:**\n{analysis}"
+                    ),
+                    'metadata': {'reason': 'no_file_changes'}
+                })
             return {
                 'success': False,
                 'message': 'AI did not suggest any file changes',

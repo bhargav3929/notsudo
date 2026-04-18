@@ -342,11 +342,18 @@ Analyze this issue and determine what code changes are needed. Use the edit_file
                 }
                 
                 if job_id:
+                    if file_changes:
+                        log_content = message.content or "Analysis complete. Suggested changes prepared."
+                    else:
+                        log_content = (
+                            message.content
+                            or "Analysis complete — no code changes suggested."
+                        )
                     db.insert_job_log({
                         'job_id': job_id,
                         'role': 'assistant',
                         'type': 'message',
-                        'content': message.content or "Analysis complete. Suggested changes prepared.",
+                        'content': log_content,
                         'metadata': {'changes_count': len(file_changes)}
                     })
                 
